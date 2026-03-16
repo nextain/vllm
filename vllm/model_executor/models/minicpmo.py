@@ -1032,8 +1032,22 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 "for TTS synthesis."
             )
         text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
-        mel_spec = m._generate_mel_spec(inputs=None, outputs=None, text=text)
-        wav_numpy, _sr = m.decode_mel_to_audio(mel_spec)
+        # _generate_mel_spec signature: (inputs, outputs, text, ...).
+        # We pass inputs=None and outputs=None because vLLM calls this
+        # post-generation with token IDs only — the raw model inputs/outputs
+        # are not retained.  The HuggingFace implementation accepts text
+        # directly when provided; None for inputs/outputs is expected in this
+        # serving path.  Confirmed via RunPod E2E testing.
+        try:
+            mel_spec = m._generate_mel_spec(inputs=None, outputs=None, text=text)
+            wav_numpy, _sr = m.decode_mel_to_audio(mel_spec)
+        except Exception as exc:
+            raise RuntimeError(
+                "decode_audio_tokens: TTS synthesis failed. "
+                "Ensure the model is loaded with --trust-remote-code and "
+                "assets/Vocos.pt is present. "
+                f"Underlying error: {exc}"
+            ) from exc
         result: np.ndarray = (
             wav_numpy.numpy() if hasattr(wav_numpy, "numpy") else wav_numpy
         )
