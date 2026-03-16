@@ -1,0 +1,158 @@
+title: SupportsAudioOutput Interface Design
+status: draft
+author: nextain/vllm fork
+last_updated: 2026-03-16
+issue_ref: naia-os#73
+
+# ============================================================
+# SECTION 1: Background
+# ============================================================
+background:
+  problem: |
+    vLLM supports SupportsTranscription (audio input → text) and SupportsRealtime
+    (streaming audio I/O), but has no interface for models that generate audio output
+    from text input (TTS / audio generation).
+    MiniCPM-o 4.5 can generate audio tokens alongside text tokens, but vLLM has no
+    standard way to route audio token output through the API server.
+  target_model: MiniCPM-o 4.5 (openbmb/MiniCPM-o-2_6)
+  use_case: Naia OS voice response — model generates speech audio from chat response
+
+  existing_patterns:
+    SupportsTranscription:
+      direction: audio-in → text-out
+      interface_file: vllm/model_executor/models/interfaces.py:1066
+      registry_file: vllm/model_executor/models/registry.py:679
+      example_model: Whisper
+    SupportsRealtime:
+      direction: streaming audio-in + audio-out (bidirectional)
+      interface_file: vllm/model_executor/models/interfaces.py:1031
+    SupportsMultiModal:
+      direction: any modality input + text output
+      interface_file: vllm/model_executor/models/interfaces.py:89
+
+# ============================================================
+# SECTION 2: Interface design (draft)
+# ============================================================
+proposed_interface:
+  name: SupportsAudioOutput
+  location: vllm/model_executor/models/interfaces.py
+  follows_pattern: SupportsTranscription + SupportsRealtime
+
+  protocol_sketch: |
+    @runtime_checkable
+    class SupportsAudioOutput(Protocol):
+        """Interface for models that generate audio tokens as output.
+
+        Models implementing this interface produce audio tokens alongside or
+        instead of text tokens. Audio token sequences are decoded by a
+        vocoder/codec to produce waveform audio.
+        """
+
+        supports_audio_output: ClassVar[Literal[True]] = True
+
+        audio_output_sample_rate: ClassVar[int]
+        """Sample rate of generated audio (Hz). e.g. 24000 for MiniCPM-o."""
+
+        audio_token_ids: ClassVar[frozenset[int]]
+        """Set of token IDs that represent audio tokens (not text)."""
+
+        @classmethod
+        def decode_audio_tokens(
+            cls,
+            token_ids: list[int],
+            model_config: ModelConfig,
+        ) -> np.ndarray:
+            """Decode audio token IDs to a waveform (float32, shape [samples]).
+
+            The model is responsible for invoking its vocoder/codec.
+            """
+            ...
+
+        @classmethod
+        def get_audio_output_config(
+            cls,
+            model_config: ModelConfig,
+        ) -> AudioOutputConfig:
+            """Return audio output configuration for this model."""
+            ...
+
+  helper_function: |
+    @overload
+    def supports_audio_output(model: type[object]) -> TypeIs[type[SupportsAudioOutput]]: ...
+
+    @overload
+    def supports_audio_output(model: object) -> TypeIs[SupportsAudioOutput]: ...
+
+    def supports_audio_output(
+        model: type[object] | object,
+    ) -> TypeIs[type[SupportsAudioOutput]] | TypeIs[SupportsAudioOutput]:
+        return getattr(model, "supports_audio_output", False)
+
+  registry_addition: |
+    # In registry.py ModelInfo:
+    supports_audio_output: bool
+
+    # In registry.py _get_model_info():
+    supports_audio_output=supports_audio_output(model),
+
+  config_addition: |
+    # New config class (vllm/config.py or vllm/entrypoints/openai/protocol.py)
+    @dataclass
+    class AudioOutputConfig:
+        sample_rate: int
+        format: Literal["pcm_f32", "wav", "ogg"] = "pcm_f32"
+
+# ============================================================
+# SECTION 3: API server integration
+# ============================================================
+api_integration:
+  endpoint: POST /v1/audio/speech (OpenAI-compatible TTS endpoint)
+  alternative: Extend chat completions with audio output option
+  decision_needed: |
+    Option A: New /v1/audio/speech endpoint (clean separation, matches OpenAI API)
+    Option B: Chat completions response includes audio chunks (complex, non-standard)
+    Recommended: Option A — upstream is more likely to accept a clean new endpoint
+
+  openai_reference: |
+    OpenAI TTS API: POST /v1/audio/speech
+    Input: { model, input (text), voice, response_format, speed }
+    Output: binary audio stream
+
+  vllm_adaptation: |
+    - Request: SpeechRequest(model, input, voice?, response_format?, speed?)
+    - Route: if supports_audio_output(model_class) → SpeechHandler
+    - Handler: tokenize input → generate audio tokens → decode via model.decode_audio_tokens()
+    - Response: StreamingResponse(audio_bytes, media_type="audio/wav")
+
+# ============================================================
+# SECTION 4: MiniCPM-o specific notes
+# ============================================================
+minicpmo_notes:
+  model_id: openbmb/MiniCPM-o-2_6
+  audio_output_mechanism: Token2wav vocoder
+  audio_token_prefix: "tts"  # skip_prefixes=["tts"] in generation config
+  sample_rate: 24000
+  known_limitations:
+    - INT4 quantization does not support TTS (bitsandbytes doesn't init TTS modules)
+    - Duplex mode requires ~28GB VRAM (24GB GPU: use half-duplex only)
+    - Token2wav requires reference audio; text-only input needs silent reference
+  init_sequence: |
+    # 3-step initialization required (from naia-os#33 experience):
+    model = AutoModel.from_pretrained(..., init_tts=True)  # skeleton only
+    model.init_tts()  # actually initializes Token2wav vocoder
+    # chat(..., generate_audio=True, output_audio_path="out.wav")  # saves to file
+
+# ============================================================
+# SECTION 5: Upstream RFC strategy
+# ============================================================
+upstream_strategy:
+  step1: Build working implementation on fork (Phase 4)
+  step2: Open GitHub Discussion / RFC Issue on vllm-project/vllm
+  step3: Get feedback on interface design before polishing PR
+  step4: Polish to upstream quality standards (all harness gates pass)
+  step5: Open PR with full test evidence and duplicate check
+  rationale: |
+    vLLM maintainers are skeptical of AI-generated PRs.
+    RFC-first approach shows design thinking and invites collaboration,
+    which increases acceptance probability significantly.
+    Implementing on fork first provides concrete evidence that it works.

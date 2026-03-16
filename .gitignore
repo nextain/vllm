@@ -190,6 +190,10 @@ cython_debug/
 
 # Claude
 .claude/
+# nextain fork: track harness hooks and settings
+!.claude/hooks/
+!.claude/hooks/*.js
+!.claude/settings.json
 
 # Codex
 .codex/

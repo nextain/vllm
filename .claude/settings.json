@@ -1,0 +1,45 @@
+{
+  "hooks": {
+    "Write": [
+      {
+        "matcher": ".*\\.py$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/spdx-header-check.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/upstream-quality-check.js"
+          }
+        ]
+      }
+    ],
+    "Edit": [
+      {
+        "matcher": ".*\\.py$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/spdx-header-check.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/upstream-quality-check.js"
+          }
+        ]
+      }
+    ],
+    "Bash": [
+      {
+        "matcher": "git commit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/commit-ai-guard.js"
+          }
+        ]
+      }
+    ]
+  }
+}

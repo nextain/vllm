@@ -1,0 +1,38 @@
+project: nextain/vllm
+description: Nextain fork of vllm-project/vllm
+
+upstream:
+  repo: vllm-project/vllm
+  branch: main
+  purpose: upstream quality tracking + contribution target
+
+context_files:
+  - path: .agents/context/agents-rules.json
+    description: Fork rules (SoT) — mandatory read
+  - path: .agents/context/contributing-guide.yaml
+    description: vLLM contribution checklist and workflow
+  - path: .agents/context/coding-conventions.yaml
+    description: vLLM coding conventions (ruff/mypy/SPDX/pre-commit)
+  - path: .agents/context/audio-output-design.yaml
+    description: SupportsAudioOutput interface design and implementation plan
+  - path: .agents/context/harness-checklist.yaml
+    description: Harness test checklist (TP/TN/FP/FN criteria)
+
+key_code_paths:
+  interfaces: vllm/model_executor/models/interfaces.py
+  registry: vllm/model_executor/models/registry.py
+  api_server: vllm/entrypoints/openai/api_server.py
+  transcription_example: vllm/model_executor/models/whisper.py
+
+harness:
+  hooks_dir: .claude/hooks/
+  hooks:
+    - spdx-header-check.js
+    - upstream-quality-check.js
+    - commit-ai-guard.js
+  tests: .agents/tests/harness/run-all.sh
+
+mirrors:
+  ai_context: .agents/context/
+  human_readable: .users/context/
+  default_lang: Korean

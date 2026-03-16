@@ -1,0 +1,183 @@
+title: Harness Test Checklist
+description: Criteria for harness hook correctness (TP/TN/FP/FN)
+pass_standard: "AI PR을 반기지 않는 vLLM 메인테이너" — FN=0% on checklist items, FP<5%
+last_updated: 2026-03-16
+
+# ============================================================
+# Terminology
+# ============================================================
+# TP (True Positive):  Hook fires correctly when violation exists
+# TN (True Negative):  Hook stays silent correctly when no violation
+# FP (False Positive): Hook fires incorrectly on valid code
+# FN (False Negative): Hook stays silent on actual violation (WORST — unacceptable)
+
+# ============================================================
+# Hook 1: spdx-header-check.js
+# Trigger: Write | Edit on *.py files in vllm/ directory
+# ============================================================
+spdx_header_check:
+  check_items:
+    - id: spdx-1
+      description: "Missing SPDX-License-Identifier line"
+      tp_example: "New file with no SPDX header → hook warns"
+      tn_example: "File with correct SPDX header → hook silent"
+      fp_example: "Empty __init__.py → hook warns (FP — should be exempt)"
+      fn_example: "File with wrong license ID → hook silent (unacceptable)"
+
+    - id: spdx-2
+      description: "Missing SPDX-FileCopyrightText line"
+      tp_example: "File with license but no copyright → hook warns"
+      tn_example: "File with both lines correct → hook silent"
+
+    - id: spdx-3
+      description: "Wrong copyright holder"
+      tp_example: "# SPDX-FileCopyrightText: Copyright Joe Corp → hook warns"
+      tn_example: "# SPDX-FileCopyrightText: Copyright contributors to the vLLM project → silent"
+
+  exempt:
+    - "Empty __init__.py (0 bytes or only comments)"
+    - "Files in vllm/third_party/"
+    - "Non-.py files"
+
+  fn_target: 0%  # Every missing/wrong SPDX must be caught
+  fp_target: <5%  # Allowed: ~1 false positive per 20 valid files
+
+# ============================================================
+# Hook 2: upstream-quality-check.js
+# Trigger: Write | Edit on vllm/**/*.py
+# ============================================================
+upstream_quality_check:
+  check_items:
+    - id: qual-1
+      description: "print() in production code (should use logger)"
+      regex: "^\\s*print\\("
+      tp_example: "    print('debug') → hook warns"
+      tn_example: "    logger.info('debug') → hook silent"
+      fp_example: "# example: print('x') in docstring → hook warns (FP acceptable — rare)"
+      fn_example: "    print(f'val={x}') not caught → unacceptable"
+      exclude: "tests/**  # print() allowed in test files"
+
+    - id: qual-2
+      description: "Bare except: (should be except Exception: or specific type)"
+      regex: "^\\s*except\\s*:"
+      tp_example: "    except: → hook warns"
+      tn_example: "    except Exception: → hook silent"
+      fn_example: "bare except not caught → unacceptable"
+
+    - id: qual-3
+      description: "f-string in logger call (should use %s format, ruff G004)"
+      regex: "logger\\.(debug|info|warning|error|critical)\\(f['\"]"
+      tp_example: "    logger.info(f'val={x}') → hook warns"
+      tn_example: "    logger.info('val=%s', x) → hook silent"
+      fp_risk: "low — pattern is specific enough"
+
+    - id: qual-4
+      description: "Direct typing.Callable/Sequence import (use collections.abc, ruff UP035)"
+      regex: "from\\s+typing\\s+import.*\\b(Callable|Sequence|Mapping|...)"
+      tp_example: "from typing import Callable → hook warns"
+      tn_example: "from collections.abc import Callable → hook silent"
+
+  fn_target: 0%  # Every print() and bare except: must be caught
+  fp_target: <5%
+
+# ============================================================
+# Hook 3: commit-ai-guard.js
+# Trigger: Bash with 'git commit'
+# ============================================================
+commit_ai_guard:
+  check_items:
+    - id: guard-1
+      description: "Missing Co-authored-by AI trailer"
+      check: "commit message does not contain 'Co-authored-by:' when message suggests AI work"
+      behavior: "WARN (not block) — remind to add trailer"
+      tp_example: "Commit message with no Co-authored-by → warn"
+      tn_example: "Commit with Co-authored-by: Claude → silent"
+      note: "Cannot detect 100% whether AI was used — warn always, let human decide"
+
+    - id: guard-2
+      description: "Duplicate PR check not mentioned in staged changes"
+      behavior: "WARN — remind to run duplicate check before upstream PR"
+      tp_example: "Any commit that modifies vllm/**/*.py → always remind"
+      note: "This is a reminder gate, not a blocking gate"
+
+    - id: guard-3
+      description: "pre-commit must have been run"
+      behavior: "WARN — remind: 'Did you run pre-commit run?'"
+      tp_example: "Any commit → always remind"
+
+    - id: guard-4
+      description: "WIP or fix as entire commit message (too vague)"
+      regex: "^(WIP|wip|fix|Fix|FIX|temp|Temp|TEMP|test|Test)$"
+      behavior: "BLOCK — reject vague single-word messages"
+      tp_example: "commit -m 'fix' → blocked"
+      tn_example: "commit -m 'fix(interfaces): add missing return type' → silent"
+
+  fn_target: 0%  # for guard-4 (block)
+  fp_target: <5%
+
+# ============================================================
+# Test cases for run-all.sh
+# ============================================================
+test_matrix:
+  spdx:
+    - case: valid_file_with_header
+      input: "# SPDX-License-Identifier: Apache-2.0\n# SPDX-FileCopyrightText: Copyright contributors to the vLLM project\n\ncode..."
+      expected: PASS (TN)
+
+    - case: missing_both_lines
+      input: "import torch\n\nclass Foo: ..."
+      expected: FAIL (TP)
+
+    - case: only_license_line
+      input: "# SPDX-License-Identifier: Apache-2.0\n\ncode..."
+      expected: FAIL (TP)
+
+    - case: only_copyright_line
+      input: "# SPDX-FileCopyrightText: Copyright contributors to the vLLM project\n\ncode..."
+      expected: FAIL (TP)
+
+    - case: wrong_copyright_holder
+      input: "# SPDX-License-Identifier: Apache-2.0\n# SPDX-FileCopyrightText: Copyright My Corp\n"
+      expected: FAIL (TP)
+
+    - case: empty_init_py
+      input: ""
+      expected: PASS (TN — exempt)
+
+  quality:
+    - case: print_in_code
+      input: "    print('hello')"
+      expected: FAIL (TP)
+
+    - case: logger_in_code
+      input: "    logger.info('hello')"
+      expected: PASS (TN)
+
+    - case: bare_except
+      input: "    except:"
+      expected: FAIL (TP)
+
+    - case: specific_except
+      input: "    except ValueError:"
+      expected: PASS (TN)
+
+    - case: f_string_in_logger
+      input: "    logger.info(f'val={x}')"
+      expected: FAIL (TP)
+
+    - case: percent_format_in_logger
+      input: "    logger.info('val=%s', x)"
+      expected: PASS (TN)
+
+  commit_guard:
+    - case: vague_message
+      input: "fix"
+      expected: BLOCK (TP)
+
+    - case: descriptive_message
+      input: "fix(interfaces): add missing return type annotation"
+      expected: PASS (TN)
+
+    - case: wip_message
+      input: "WIP"
+      expected: BLOCK (TP)

@@ -1,0 +1,132 @@
+source: vllm pyproject.toml + .pre-commit-config.yaml + source code analysis
+last_verified: 2026-03-16
+
+# ============================================================
+# SECTION 1: SPDX License Header (enforced by pre-commit)
+# ============================================================
+spdx_header:
+  required_for: every .py file (non-empty)
+  location: first 2 lines of file
+  exact_format: |
+    # SPDX-License-Identifier: Apache-2.0
+    # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+  notes:
+    - Empty __init__.py is exempt
+    - No variation allowed (exact strings)
+
+# ============================================================
+# SECTION 2: Ruff linting rules
+# ============================================================
+ruff:
+  version: "0.14.0"
+  selected_rules:
+    E: pycodestyle errors
+    F: Pyflakes
+    UP: pyupgrade (modern Python syntax)
+    B: flake8-bugbear
+    ISC: flake8-implicit-str-concat
+    SIM: flake8-simplify
+    I: isort
+    G: flake8-logging-format
+  ignored:
+    F405: star import (allowed)
+    F403: star import (allowed)
+    E731: lambda expression assignment (allowed)
+    B905: zip without strict= (allowed)
+    B007: loop variable not used in body (allowed)
+    UP032: f-string format (allowed)
+  common_violations:
+    - "print() → use vllm.logger.init_logger(__name__) and logger.info/debug/warning/error"
+    - "bare except: → except Exception: or specific exception type"
+    - "mutable default args (list/dict in function signature)"
+    - "implicit string concatenation without parentheses"
+
+# ============================================================
+# SECTION 3: Type annotations (mypy strict)
+# ============================================================
+mypy:
+  plugins: [pydantic.mypy]
+  python_versions: [3.10, 3.11, 3.12, 3.13]
+  requirements:
+    - All public function signatures must be typed
+    - Return types required
+    - ClassVar for class-level flags in Protocol classes
+    - Use typing_extensions for TypeAlias, TypeIs, Self (not typing, for 3.10 compat)
+    - Use collections.abc for Callable, Sequence, Mapping, etc. (not typing)
+  protocol_pattern: |
+    # Correct way to define a Protocol interface in vLLM
+    from typing import ClassVar, Literal, Protocol, runtime_checkable
+    from typing_extensions import TypeIs
+
+    @runtime_checkable
+    class SupportsFoo(Protocol):
+        supports_foo: ClassVar[Literal[True]] = True
+
+        def foo_method(self, arg: SomeType) -> ReturnType: ...
+
+    def supports_foo(model: type[object] | object) -> TypeIs[SupportsFoo]:
+        return getattr(model, "supports_foo", False)
+
+# ============================================================
+# SECTION 4: Import conventions
+# ============================================================
+imports:
+  order: stdlib → third-party → vllm (isort enforced by ruff I rules)
+  lazy_imports:
+    rule: "vllm/__init__.py uses lazy imports — new public exports must follow the pattern"
+    check: "pre-commit check-root-lazy-imports hook validates this"
+  type_checking_imports: |
+    # Use TYPE_CHECKING guard to avoid circular imports
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        from vllm.config import VllmConfig
+    else:
+        VllmConfig = object
+  preferred_collections: |
+    # Use collections.abc instead of typing for:
+    from collections.abc import Callable, Sequence, Mapping, MutableSequence, AsyncGenerator
+
+# ============================================================
+# SECTION 5: Logging
+# ============================================================
+logging:
+  rule: "Never use print(). Always use structured logger."
+  setup: |
+    from vllm.logger import init_logger
+    logger = init_logger(__name__)
+  levels:
+    debug: development/tracing info
+    info: normal operation milestones
+    warning: recoverable issues, deprecated usage
+    error: errors that don't crash
+  format_strings: "Use %s format (not f-strings) in log calls: logger.info('msg %s', var)"
+
+# ============================================================
+# SECTION 6: Code organization
+# ============================================================
+code_organization:
+  new_interface:
+    location: vllm/model_executor/models/interfaces.py
+    registration: vllm/model_executor/models/registry.py
+    api_integration: vllm/entrypoints/openai/api_server.py (conditional init)
+    pattern: "Follow SupportsTranscription pattern exactly"
+  new_model:
+    location: vllm/model_executor/models/{model_name}.py
+    registration: add to registry.py ModelRegistry._BASE_VLLM_MODELS
+  tests:
+    unit: tests/test_{area}.py
+    models: tests/models/
+    run_first: target test before full suite
+
+# ============================================================
+# SECTION 7: Anti-patterns (trigger PR rejection)
+# ============================================================
+rejection_triggers:
+  - "New .py file without SPDX header"
+  - "print() in production code"
+  - "bare except:"
+  - "Missing type annotations on public functions"
+  - "Direct import of typing.Callable/Sequence (use collections.abc)"
+  - "f-string in log calls (use %s format)"
+  - "No test added for new feature"
+  - "Mutable default argument in function signature"

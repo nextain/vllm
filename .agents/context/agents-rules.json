@@ -1,0 +1,50 @@
+{
+  "projectName": "nextain/vllm",
+  "description": "Nextain fork of vllm-project/vllm — AI-Native audio output development for Naia OS",
+  "version": "1.0.0",
+  "upstreamRepo": "vllm-project/vllm",
+  "forkPurpose": "Add SupportsAudioOutput interface and MiniCPM-o audio output support; develop upstream-quality contributions",
+
+  "mandatoryReads": [
+    "AGENTS.md — upstream vLLM AI contribution policy (supersedes all fork rules)",
+    ".agents/context/project-index.yaml — context index",
+    ".agents/context/contributing-guide.yaml — vLLM contribution checklist",
+    ".agents/context/coding-conventions.yaml — vLLM coding conventions",
+    ".agents/context/audio-output-design.yaml — SupportsAudioOutput interface design"
+  ],
+
+  "upstreamCompliance": {
+    "priority": "HIGHEST — upstream rules override fork rules",
+    "reference": "AGENTS.md §1 Contribution Policy",
+    "rules": {
+      "duplicateCheck": "MANDATORY before any upstream PR — run gh pr list search commands",
+      "noLowValue": "Never open single-typo or isolated style PRs; bundle with substantive changes",
+      "humanDefense": "Every changed line must be understood and defensible",
+      "aiDisclosure": "Co-authored-by trailer required in every AI-assisted commit",
+      "signedOffBy": "Signed-off-by trailer required (DCO) — pre-commit adds automatically",
+      "preCommitMustPass": "All pre-commit hooks must pass before any commit"
+    }
+  },
+
+  "harnessGates": {
+    "description": "3 Claude Code hooks enforce upstream quality before code leaves the editor",
+    "location": ".claude/hooks/",
+    "gates": [
+      "spdx-header-check.js — SPDX header on every Python file",
+      "upstream-quality-check.js — ruff-detectable anti-patterns (regex, no Python needed)",
+      "commit-ai-guard.js — AI disclosure + Signed-off-by reminder before git commit"
+    ],
+    "passCriteria": "FN=0% on checklist items, FP<5%"
+  },
+
+  "forkBranchPolicy": {
+    "experimentalWork": "feature/audio-output/{desc} or fix/{desc} — fork main only",
+    "upstreamPR": "Only after: all harness hooks pass + pre-commit passes + tests pass + duplicate check done",
+    "commitFormat": "type(scope): description\\n\\nCo-authored-by: Claude <noreply@anthropic.com>\\nSigned-off-by: Luke N <luke@nextain.io>"
+  },
+
+  "contextMirroring": {
+    "rule": "dual — .agents/ (English, token-efficient) ↔ .users/context/ (Korean, detailed)",
+    "trigger": "Update both layers when context changes"
+  }
+}

@@ -1,0 +1,112 @@
+source: vllm-project/vllm AGENTS.md + CONTRIBUTING.md + pre-commit-config.yaml
+last_verified: 2026-03-16
+
+# ============================================================
+# SECTION 1: Pre-contribution checklist (mandatory)
+# ============================================================
+pre_contribution_checklist:
+  - id: dup-check
+    description: Verify no existing open PR covers the same change
+    commands:
+      - "gh issue view <issue_number> --repo vllm-project/vllm --comments"
+      - "gh pr list --repo vllm-project/vllm --state open --search '<issue_number> in:body'"
+      - "gh pr list --repo vllm-project/vllm --state open --search '<area keywords>'"
+    fail_action: Do not open PR; comment on existing PR if approach differs
+
+  - id: no-busywork
+    description: Change must be substantive (bug fix, feature, meaningful refactor)
+    examples_of_rejection:
+      - single typo fix in isolation
+      - single mutable default arg fix in isolation
+      - isolated style change only
+    pass_criterion: "Change includes at least one of: bug fix, new feature, meaningful refactor, + style/cleanup bundled with it"
+
+  - id: human-defense
+    description: Submitter must understand and be able to defend every changed line
+    requirement: "Review all diff lines, run relevant tests, write clear PR description"
+
+  - id: ai-disclosure
+    description: AI-assisted work must be disclosed in PR description + commit trailers
+    pr_must_include:
+      - Why this is not duplicating an existing PR
+      - Test commands run and their results
+      - Clear statement that AI assistance was used
+    commit_trailer: "Co-authored-by: Claude <noreply@anthropic.com>"
+
+# ============================================================
+# SECTION 2: Environment setup
+# ============================================================
+environment_setup:
+  package_manager: uv
+  commands:
+    - "curl -LsSf https://astral.sh/uv/install.sh | sh"
+    - "uv venv --python 3.12"
+    - "source .venv/bin/activate"
+    - "uv pip install -r requirements/lint.txt"
+    - "pre-commit install"
+  python_only_install: "VLLM_USE_PRECOMPILED=1 uv pip install -e ."
+  full_install: "uv pip install -e ."
+
+# ============================================================
+# SECTION 3: Test workflow
+# ============================================================
+testing:
+  install: "uv pip install pytest pytest-asyncio tblib"
+  install_all: "uv pip install -r requirements/test.txt"
+  run_specific: "pytest tests/path/to/test.py -v -s -k test_name"
+  run_dir: "pytest tests/path/to/dir -v -s"
+  requirement: "Run tests relevant to the changed area before submitting PR"
+
+# ============================================================
+# SECTION 4: Pre-commit (mandatory before every commit)
+# ============================================================
+pre_commit:
+  install: "pre-commit install"
+  run_staged: "pre-commit run"
+  run_all: "pre-commit run --all-files"
+  run_specific: "pre-commit run ruff-check --all-files"
+  run_mypy_ci: "pre-commit run mypy-3.10 --all-files --hook-stage manual"
+  hooks_that_run_locally:
+    - ruff-check (auto-fix)
+    - ruff-format
+    - typos
+    - clang-format (C/CUDA only)
+    - markdownlint-cli2
+    - actionlint
+    - mypy-local (Python 3.10)
+    - shellcheck
+    - signoff-commit (adds Signed-off-by to commit message automatically)
+    - check-spdx-header
+    - check-root-lazy-imports
+
+# ============================================================
+# SECTION 5: Commit format
+# ============================================================
+commit_format:
+  trailers_required:
+    - "Co-authored-by: Claude <noreply@anthropic.com>  # if AI-assisted"
+    - "Signed-off-by: {name} <{email}>  # added auto by pre-commit signoff hook"
+  style: "No rigid prefix required upstream, but [Area] or [Type] prefix is common"
+  example: |
+    feat: add SupportsAudioOutput interface for TTS models
+
+    Implements Protocol interface following SupportsTranscription pattern.
+    Models that generate audio output (e.g. MiniCPM-o) implement this interface.
+
+    Co-authored-by: Claude <noreply@anthropic.com>
+    Signed-off-by: Luke N <luke@nextain.io>
+
+# ============================================================
+# SECTION 6: PR description requirements (AI-assisted)
+# ============================================================
+pr_description_ai:
+  required_sections:
+    - "Why this is not a duplicate of an existing PR"
+    - "What changed and why"
+    - "Test commands run + results (copy-paste terminal output)"
+    - "AI assistance disclosure (which tool, what it did)"
+  auto_rejection_signals:
+    - No test evidence
+    - No duplicate check mentioned
+    - Missing AI disclosure when AI was used
+    - WIP or incomplete work
