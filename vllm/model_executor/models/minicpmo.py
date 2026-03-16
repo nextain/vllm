@@ -26,8 +26,9 @@
 
 import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
+import numpy as np
 import torch
 from torch import nn
 from transformers import BatchFeature
@@ -62,6 +63,7 @@ from vllm.multimodal.processing import (
 )
 from vllm.utils.tensor_schema import TensorSchema, TensorShape
 
+from .interfaces import SupportsAudioOutput
 from .minicpmv import (
     _MAX_FRAMES_PER_VIDEO,
     MiniCPMV2_6,
@@ -825,8 +827,19 @@ class MiniCPMO2_6(MiniCPMOBaseModel, MiniCPMV2_6):
             )
 
 
-class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5):
-    """MiniCPM-O 4.5 model with Qwen3 backbone."""
+class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
+    """MiniCPM-O 4.5 model with Qwen3 backbone.
+
+    Supports audio output via Token2wav vocoder (``SupportsAudioOutput``).
+    The Token2wav weights are NOT loaded by default (they are skipped in
+    ``load_weights`` via ``skip_prefixes=["tts"]``).  Audio synthesis
+    requires the caller to load a separate model instance with TTS
+    initialised using ``model.init_tts()``.
+    """
+
+    # SupportsAudioOutput class variables
+    supports_audio_output: ClassVar[Literal[True]] = True
+    audio_output_sample_rate: ClassVar[int] = 24000
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__(vllm_config=vllm_config, prefix=prefix)
@@ -835,6 +848,63 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5):
             self.apm = self.init_audio_module(
                 vllm_config=vllm_config, prefix=maybe_prefix(prefix, "apm")
             )
+
+    @classmethod
+    def decode_audio_tokens(
+        cls,
+        token_ids: list[int],
+        model_instance: object,
+    ) -> np.ndarray:
+        """Decode audio token IDs to a waveform via Token2wav.
+
+        MiniCPM-o 4.5 uses a two-stage TTS pipeline: the main LLM generates
+        text marked with ``<|tts_bos|>...<|tts_eos|>`` tokens; Token2wav
+        then synthesizes VQ audio codes from that text.  The ``token_ids``
+        passed here are the main LLM output tokens (integer IDs) containing
+        the TTS text span.
+
+        The ``model_instance`` must be a HuggingFace ``MiniCPMO`` model
+        loaded with ``init_tts=True`` and ``model.init_tts()`` already
+        called.  The vLLM-serving model instance is NOT used for this step
+        because ``load_weights`` skips all ``tts.*`` weights.
+
+        Args:
+            token_ids: Token IDs from the main LLM output that include the
+                TTS text span between ``<|tts_bos|>`` and ``<|tts_eos|>``.
+            model_instance: A HuggingFace ``MiniCPMO`` model instance with
+                TTS initialised (``model.tts`` and ``model.vocos`` present).
+
+        Returns:
+            Float32 waveform, shape ``[num_samples]``.
+
+        Raises:
+            RuntimeError: If ``model_instance`` has no ``tts`` or ``vocos``
+                attribute (TTS not initialised or weights not loaded).
+        """
+        if not (hasattr(model_instance, "tts") and hasattr(model_instance, "vocos")):
+            raise RuntimeError(
+                "MiniCPM-o 4.5 audio output requires a model instance with TTS "
+                "initialised.  Load the HuggingFace model separately with "
+                "AutoModel.from_pretrained(..., init_tts=True) then call "
+                "model.init_tts() before invoking decode_audio_tokens()."
+            )
+        # Cast to Any for dynamic dispatch into the HuggingFace model instance.
+        # The attributes (_generate_mel_spec, decode_mel_to_audio, tokenizer)
+        # are defined on openbmb/MiniCPM-o-2_6 but not on vLLM's base classes.
+        m: Any = model_instance
+        tokenizer = getattr(m, "tokenizer", None)
+        if tokenizer is None:
+            raise RuntimeError(
+                "model_instance.tokenizer is required to decode token_ids to text "
+                "for TTS synthesis."
+            )
+        text = tokenizer.decode(token_ids, skip_special_tokens=False)
+        mel_spec = m._generate_mel_spec(inputs=None, outputs=None, text=text)
+        wav_numpy, _sr = m.decode_mel_to_audio(mel_spec)
+        result: np.ndarray = (
+            wav_numpy.numpy() if hasattr(wav_numpy, "numpy") else wav_numpy
+        )
+        return result
 
 
 _MINICPMO_SUPPORT_VERSION = {
