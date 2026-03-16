@@ -4,6 +4,11 @@ author: nextain/vllm fork
 last_updated: 2026-03-16
 issue_ref: naia-os#73
 
+scope_decision:
+  qwen2_audio: out_of_scope
+  rationale: "테스트 범위가 너무 넓어짐. MiniCPM-o 전용으로 구현 후 실증."
+  upstream_response: "upstream이 generality 요구 시 Luke가 직접 논의. 범위 확장은 별도 PR."
+
 # ============================================================
 # SECTION 1: Background
 # ============================================================
@@ -156,3 +161,83 @@ upstream_strategy:
     RFC-first approach shows design thinking and invites collaboration,
     which increases acceptance probability significantly.
     Implementing on fork first provides concrete evidence that it works.
+
+# ============================================================
+# SECTION 6: Upstream discussion prep (AI assists Luke)
+# ============================================================
+# These are design questions upstream maintainers WILL ask.
+# AI's role: prepare the arguments so Luke enters the discussion ready.
+# Luke's role: lead the actual discussion, judge tradeoffs, respond.
+# ============================================================
+upstream_discussion_prep:
+
+  q1:
+    question: "Why a new Protocol instead of extending SupportsTranscription or SupportsRealtime?"
+    argument: |
+      SupportsTranscription: audio-in → text-out (ASR direction)
+      SupportsRealtime: streaming bidirectional audio I/O (WebRTC-style)
+      SupportsAudioOutput: text-in → audio-out (TTS direction)
+      These are orthogonal capabilities. A model can support transcription AND audio output
+      (e.g. MiniCPM-o supports both). Merging them would violate single-responsibility
+      and break existing SupportsTranscription implementations.
+    supporting_evidence: "interfaces.py already separates SupportsMultiModal, SupportsTranscription, SupportsRealtime as distinct Protocols — same pattern."
+
+  q2:
+    question: "Why only MiniCPM-o? Interface seems too narrow for one model."
+    argument: |
+      This is a proof-of-concept implementation. The Protocol is designed to be
+      model-agnostic (decode_audio_tokens takes only token_ids + model_config).
+      MiniCPM-o is the first implementation because it's the only model we have
+      test infrastructure for. The interface does not hard-code MiniCPM-o anywhere.
+      Other models can implement it without changes to the Protocol.
+    scope_decision: "Qwen2-Audio extension is explicitly out of scope for this PR — test surface too wide. Can be a follow-up."
+    note_for_luke: "If maintainer insists on a second implementation, negotiate: 'We can add a stub for Qwen2-Audio in a follow-up PR once the interface is merged.'"
+
+  q3:
+    question: "Token2wav adds a new dependency. How do you handle optional install?"
+    argument: |
+      Token2wav is loaded lazily inside decode_audio_tokens() with a clear ImportError message:
+        try:
+            from minicpmo.token2wav import Token2wav
+        except ImportError:
+            raise ImportError(
+                "Token2wav is required for audio output. "
+                "Install with: pip install vllm[audio-output]"
+            )
+      This pattern matches how vLLM already handles optional deps (e.g. flashinfer, lm-format-enforcer).
+      No mandatory dependency is added to core requirements.
+    reference: "See vllm/model_executor/layers/quantization/ for existing optional-dep patterns."
+
+  q4:
+    question: "Does /v1/audio/speech need an RFC before this PR?"
+    argument: |
+      The endpoint strictly follows OpenAI TTS API spec (POST /v1/audio/speech).
+      vLLM's stated goal is OpenAI API compatibility. This is an extension of that goal,
+      not a novel API surface. The interface Protocol (SupportsAudioOutput) can be merged
+      first as a smaller PR; the endpoint can follow separately after interface approval.
+    pr_split_proposal: |
+      PR-1 (small): interfaces.py + registry.py — SupportsAudioOutput Protocol only
+      PR-2 (after PR-1 merged): MiniCPM-o implementation + Token2wav optional dep
+      PR-3 (after discussion): /v1/audio/speech endpoint
+    note_for_luke: "If maintainer still wants RFC for the endpoint, offer to open a Discussion first and proceed with PR-1 only."
+
+  q5:
+    question: "How do we know skip_prefixes=[tts] removal doesn't break existing text output?"
+    argument: |
+      skip_prefixes is used to prevent TTS-prefix tokens from appearing in text responses.
+      In SupportsAudioOutput mode, the model is invoked via decode_audio_tokens() which
+      routes audio tokens to Token2wav — they never enter the text output path.
+      Existing text generation path is unchanged; the new code path is additive only.
+    test_evidence_needed: "pytest tests/models/ with MiniCPM-o text-only generation must pass. Include in PR."
+
+  q6:
+    question: "What tests are included?"
+    minimum_required:
+      - "tests/models/test_minicpmo_audio_output.py — decode_audio_tokens produces valid waveform"
+      - "tests/models/test_minicpmo_text_regression.py — existing text output path unchanged"
+      - "tests/entrypoints/openai/test_audio_speech.py — /v1/audio/speech endpoint (PR-3)"
+    pr_description_must_include: |
+      pytest tests/models/test_minicpmo_audio_output.py -v: PASSED
+      pytest tests/models/test_minicpmo_text_regression.py -v: PASSED
+      pre-commit run --all-files: PASSED
+      AI assistance used: Claude (reviewed and defended end-to-end by Luke N)

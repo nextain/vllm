@@ -14,6 +14,19 @@ vLLM 공식 레포(`vllm-project/vllm`)의 Nextain 포크.
 vLLM 메인테이너는 AI가 생성한 PR에 매우 회의적입니다.
 모든 코드는 "AI PR을 반기지 않는 메인테이너"가 봤을 때 통과할 수 있어야 합니다.
 
+## AI의 역할 분담
+
+| 영역 | 담당 |
+|------|------|
+| 코딩 규칙 위반 (SPDX, ruff, DCO) | 하네스 자동 검사 |
+| upstream 논의 논거 준비 (Q&A, 반론 대응) | AI가 컨텍스트로 준비 |
+| 설계 판단, 트레이드오프 결정 | Luke 직접 판단 |
+| 실제 upstream 논의 주도 | Luke 직접 수행 |
+
+> AI slop으로 보이지 않으려면 코드 규칙은 하네스가 막고,
+> 설계 논거는 AI가 준비하고, 논의는 Luke가 직접 해야 함.
+> `audio-output-design.yaml` §6 upstream_discussion_prep 참조.
+
 ## 세션 시작 시 필수 읽기
 
 1. `AGENTS.md` — 업스트림 vLLM AI 기여 정책 (가장 높은 우선순위)
