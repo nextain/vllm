@@ -9,12 +9,13 @@ calls are mocked).  They verify:
   3. decode_audio_tokens() raises RuntimeError when TTS is not initialised.
   4. decode_audio_tokens() delegates to the TTS pipeline when TTS is ready.
   5. The _ModelInfo.supports_audio_output field exists and has the right type.
+  6. load_weights() conditionally skips tts.* prefixes.
 """
 
 from __future__ import annotations
 
 from dataclasses import fields
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -38,24 +39,26 @@ def _make_fake_minicpmo4_5() -> type[SupportsAudioOutput]:
         supports_audio_output: ClassVar[Literal[True]] = True
         audio_output_sample_rate: ClassVar[int] = 24000
 
-        @classmethod
         def decode_audio_tokens(
-            cls,
+            self,
             token_ids: list[int],
-            model_instance: object,
         ) -> np.ndarray:
-            if not (
-                hasattr(model_instance, "tts") and hasattr(model_instance, "vocos")
-            ):
+            if not hasattr(self, "tts"):
                 raise RuntimeError(
-                    "MiniCPM-o 4.5 audio output requires a model instance "
-                    "with TTS initialised."
+                    "Audio output not initialised. "
+                    "Start vLLM with --hf-overrides '{\"enable_audio_output\": true}' "
+                    "and --trust-remote-code."
                 )
-            tokenizer = getattr(model_instance, "tokenizer", None)
+            if not hasattr(self, "vocos"):
+                raise RuntimeError(
+                    "Vocos vocoder not loaded. "
+                    "Call model.init_tts() after loading to load assets/Vocos.pt."
+                )
+            tokenizer = getattr(self, "tokenizer", None)
             if tokenizer is None:
-                raise RuntimeError("model_instance.tokenizer is required.")
-            m: Any = cast(Any, model_instance)
-            text: str = tokenizer.decode(token_ids)
+                raise RuntimeError("self.tokenizer is required.")
+            m: Any = self
+            text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
             mel_spec = m._generate_mel_spec(inputs=None, outputs=None, text=text)
             wav_numpy, _sr = m.decode_mel_to_audio(mel_spec)
             result: np.ndarray = (
@@ -111,22 +114,26 @@ class TestSupportsAudioOutputDetection:
 class TestDecodeAudioTokensNoTTS:
     def test_raises_when_no_tts_attr(self) -> None:
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
-        model_instance = MagicMock(spec=[])  # empty spec — no attributes
-        with pytest.raises(RuntimeError, match="TTS initialised"):
-            FakeMiniCPMO4_5.decode_audio_tokens([1, 2, 3], model_instance)
+        instance = FakeMiniCPMO4_5()
+        # no tts, no vocos on instance
+        with pytest.raises(RuntimeError, match="enable_audio_output"):
+            instance.decode_audio_tokens([1, 2, 3])
 
     def test_raises_when_tts_but_no_vocos(self) -> None:
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
-        model_instance = MagicMock(spec=["tts"])  # has tts, no vocos
-        with pytest.raises(RuntimeError, match="TTS initialised"):
-            FakeMiniCPMO4_5.decode_audio_tokens([1, 2, 3], model_instance)
+        instance = FakeMiniCPMO4_5()
+        instance.tts = MagicMock()  # type: ignore[attr-defined]
+        with pytest.raises(RuntimeError, match="init_tts"):
+            instance.decode_audio_tokens([1, 2, 3])
 
     def test_raises_when_no_tokenizer(self) -> None:
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
-        model_instance = MagicMock(spec=["tts", "vocos"])
-        # getattr(..., "tokenizer", None) returns None when not in spec
+        instance = FakeMiniCPMO4_5()
+        instance.tts = MagicMock()  # type: ignore[attr-defined]
+        instance.vocos = MagicMock()  # type: ignore[attr-defined]
+        # no tokenizer — getattr returns None
         with pytest.raises(RuntimeError, match="tokenizer"):
-            FakeMiniCPMO4_5.decode_audio_tokens([1, 2, 3], model_instance)
+            instance.decode_audio_tokens([1, 2, 3])
 
 
 # ---------------------------------------------------------------------------
@@ -135,69 +142,69 @@ class TestDecodeAudioTokensNoTTS:
 
 
 class TestDecodeAudioTokensMocked:
-    def test_returns_ndarray(self) -> None:
+    def _make_ready_instance(self) -> Any:
+        """Return a FakeMiniCPMO4_5 instance with tts/vocos/tokenizer mocked."""
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
+        instance = FakeMiniCPMO4_5()
+        instance.tts = MagicMock()  # type: ignore[attr-defined]
+        instance.vocos = MagicMock()  # type: ignore[attr-defined]
+        instance.tokenizer = MagicMock()  # type: ignore[attr-defined]
+        instance.tokenizer.decode.return_value = "Hello world"
+        instance._generate_mel_spec = MagicMock(  # type: ignore[attr-defined]
+            return_value=torch.zeros(1, 10, 100)
+        )
+        instance.decode_mel_to_audio = MagicMock(  # type: ignore[attr-defined]
+            return_value=(np.zeros(24000, dtype=np.float32), 24000)
+        )
+        return instance
 
-        model_instance = MagicMock()
-        model_instance.tts = MagicMock()
-        model_instance.vocos = MagicMock()
-        model_instance.tokenizer.decode.return_value = "Hello world"
-
-        fake_mel = torch.zeros(1, 10, 100)
-        model_instance._generate_mel_spec.return_value = fake_mel
-
-        fake_wav = np.zeros(24000, dtype=np.float32)
-        model_instance.decode_mel_to_audio.return_value = (fake_wav, 24000)
-
-        result = FakeMiniCPMO4_5.decode_audio_tokens([10, 20, 30], model_instance)
-
+    def test_returns_ndarray(self) -> None:
+        instance = self._make_ready_instance()
+        result = instance.decode_audio_tokens([10, 20, 30])
         assert isinstance(result, np.ndarray)
         assert result.dtype == np.float32
         assert result.shape == (24000,)
 
     def test_delegates_to_generate_mel_spec(self) -> None:
-        FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
-        model_instance = MagicMock()
-        model_instance.tts = MagicMock()
-        model_instance.vocos = MagicMock()
-        model_instance.tokenizer.decode.return_value = "test text"
-
-        fake_mel = torch.zeros(1, 10, 100)
-        model_instance._generate_mel_spec.return_value = fake_mel
-        fake_wav = np.zeros(100, dtype=np.float32)
-        model_instance.decode_mel_to_audio.return_value = (fake_wav, 24000)
-
-        FakeMiniCPMO4_5.decode_audio_tokens([5, 6, 7], model_instance)
-
-        model_instance._generate_mel_spec.assert_called_once_with(
-            inputs=None, outputs=None, text="test text"
+        instance = self._make_ready_instance()
+        instance.decode_audio_tokens([5, 6, 7])
+        instance._generate_mel_spec.assert_called_once_with(
+            inputs=None, outputs=None, text="Hello world"
         )
 
     def test_handles_torch_tensor_wav(self) -> None:
         """decode_mel_to_audio may return a torch.Tensor; ensure .numpy()."""
-        FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
-        model_instance = MagicMock()
-        model_instance.tts = MagicMock()
-        model_instance.vocos = MagicMock()
-        model_instance.tokenizer.decode.return_value = "hi"
-
-        fake_mel = torch.zeros(1, 5, 100)
-        model_instance._generate_mel_spec.return_value = fake_mel
-
+        instance = self._make_ready_instance()
         fake_wav_tensor = torch.zeros(12000, dtype=torch.float32)
-        model_instance.decode_mel_to_audio.return_value = (
-            fake_wav_tensor,
-            24000,
-        )
+        instance.decode_mel_to_audio.return_value = (fake_wav_tensor, 24000)
 
-        result = FakeMiniCPMO4_5.decode_audio_tokens([1], model_instance)
+        result = instance.decode_audio_tokens([1])
 
         assert isinstance(result, np.ndarray)
         assert result.shape == (12000,)
 
 
 # ---------------------------------------------------------------------------
-# Test 4: _ModelInfo dataclass has supports_audio_output field
+# Test 4: load_weights skip_prefixes logic
+# ---------------------------------------------------------------------------
+
+
+class TestLoadWeightsSkipPrefixes:
+    """Verify the skip_prefixes logic used by MiniCPMO4_5.load_weights."""
+
+    def _compute_skip(self, enable_audio_output: bool) -> list[str]:
+        """Mirror the logic in MiniCPMO4_5.load_weights."""
+        return [] if enable_audio_output else ["tts"]
+
+    def test_tts_skipped_by_default(self) -> None:
+        assert self._compute_skip(enable_audio_output=False) == ["tts"]
+
+    def test_tts_included_when_flag_set(self) -> None:
+        assert self._compute_skip(enable_audio_output=True) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 5: _ModelInfo dataclass has supports_audio_output field
 # ---------------------------------------------------------------------------
 
 

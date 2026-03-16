@@ -42,6 +42,7 @@ from transformers.models.whisper.modeling_whisper import (
 
 from vllm.config import VllmConfig
 from vllm.config.multimodal import BaseDummyOptions
+from vllm.logger import init_logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalKwargsItems
 from vllm.multimodal.inputs import (
     MultiModalDataDict,
@@ -61,6 +62,7 @@ from vllm.multimodal.processing import (
     PromptUpdate,
     PromptUpdateDetails,
 )
+from vllm.transformers_utils.dynamic_module import try_get_class_from_dynamic_module
 from vllm.utils.tensor_schema import TensorSchema, TensorShape
 
 from .interfaces import SupportsAudioOutput
@@ -75,6 +77,8 @@ from .minicpmv import (
     _minicpmv_field_config,
 )
 from .utils import AutoWeightsLoader, cast_overflow_tensors, maybe_prefix
+
+logger = init_logger(__name__)
 
 CPU_DEVICE = torch.device("cpu")
 
@@ -830,11 +834,21 @@ class MiniCPMO2_6(MiniCPMOBaseModel, MiniCPMV2_6):
 class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
     """MiniCPM-O 4.5 model with Qwen3 backbone.
 
-    Supports audio output via Token2wav vocoder (``SupportsAudioOutput``).
-    The Token2wav weights are NOT loaded by default (they are skipped in
-    ``load_weights`` via ``skip_prefixes=["tts"]``).  Audio synthesis
-    requires the caller to load a separate model instance with TTS
-    initialised using ``model.init_tts()``.
+    Supports audio output via the Token2wav TTS pipeline
+    (``SupportsAudioOutput``).
+
+    By default, TTS weights (``tts.*`` in the checkpoint) are skipped so that
+    serving text-only requests is not penalised by the extra VRAM.  Pass
+    ``--hf-overrides '{"enable_audio_output": true}'`` (or set
+    ``enable_audio_output=True`` in the model config) to load the TTS weights
+    in-process and enable ``decode_audio_tokens()``.
+
+    When ``enable_audio_output=True``:
+    * ``self.tts`` is initialised as a ``ConditionalChatTTS`` module via
+      ``trust_remote_code`` (requires ``--trust-remote-code``).
+    * ``self.vocos`` is **not** in the checkpoint; it must be loaded
+      separately via ``model.init_tts()``.  Call that once after
+      ``from_pretrained`` before invoking ``decode_audio_tokens()``.
     """
 
     # SupportsAudioOutput class variables
@@ -849,11 +863,58 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 vllm_config=vllm_config, prefix=maybe_prefix(prefix, "apm")
             )
 
-    @classmethod
+        if getattr(self.config, "enable_audio_output", False):
+            self._init_tts_module(vllm_config)
+
+    def _init_tts_module(self, vllm_config: VllmConfig) -> None:
+        """Initialise ``self.tts`` when ``enable_audio_output=True``.
+
+        ``ConditionalChatTTS`` lives in the HuggingFace model repo and is
+        loaded via ``trust_remote_code``.  If the class cannot be resolved
+        (e.g. ``--trust-remote-code`` not set) a warning is logged and TTS
+        is left uninitialised — ``decode_audio_tokens()`` will raise at call
+        time with a clear message.
+        """
+        tts_config = getattr(self.config, "tts_config", None)
+        if tts_config is None:
+            logger.warning(
+                "enable_audio_output=True but tts_config is absent from "
+                "model config; TTS module will not be initialised."
+            )
+            return
+
+        model_name = vllm_config.model_config.model
+        trust_remote = vllm_config.model_config.trust_remote_code
+        tts_cls = try_get_class_from_dynamic_module(
+            "modeling_minicpmo.ConditionalChatTTS",
+            model_name,
+            trust_remote_code=trust_remote,
+        )
+        if tts_cls is None:
+            logger.warning(
+                "Could not load ConditionalChatTTS from %s "
+                "(trust_remote_code=%s). "
+                "Start vLLM with --trust-remote-code to enable audio output.",
+                model_name,
+                trust_remote,
+            )
+            return
+
+        self.tts: nn.Module = tts_cls(tts_config)
+        logger.info(
+            "ConditionalChatTTS initialised for audio output "
+            "(vocos must still be loaded via model.init_tts())."
+        )
+
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        enable_tts = getattr(self.config, "enable_audio_output", False)
+        skip: list[str] = [] if enable_tts else ["tts"]
+        loader = AutoWeightsLoader(self, skip_prefixes=skip)
+        return loader.load_weights(weights)
+
     def decode_audio_tokens(
-        cls,
+        self,
         token_ids: list[int],
-        model_instance: object,
     ) -> np.ndarray:
         """Decode audio token IDs to a waveform via Token2wav.
 
@@ -863,42 +924,45 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         passed here are the main LLM output tokens (integer IDs) containing
         the TTS text span.
 
-        The ``model_instance`` must be a HuggingFace ``MiniCPMO`` model
-        loaded with ``init_tts=True`` and ``model.init_tts()`` already
-        called.  The vLLM-serving model instance is NOT used for this step
-        because ``load_weights`` skips all ``tts.*`` weights.
+        The model must have been started with
+        ``--hf-overrides '{"enable_audio_output": true}'`` and
+        ``model.init_tts()`` must have been called to load the Vocos
+        vocoder from ``assets/Vocos.pt`` in the model directory.
 
         Args:
             token_ids: Token IDs from the main LLM output that include the
                 TTS text span between ``<|tts_bos|>`` and ``<|tts_eos|>``.
-            model_instance: A HuggingFace ``MiniCPMO`` model instance with
-                TTS initialised (``model.tts`` and ``model.vocos`` present).
 
         Returns:
             Float32 waveform, shape ``[num_samples]``.
 
         Raises:
-            RuntimeError: If ``model_instance`` has no ``tts`` or ``vocos``
-                attribute (TTS not initialised or weights not loaded).
+            RuntimeError: If TTS is not initialised (``enable_audio_output``
+                not set, ``trust_remote_code`` missing, or ``init_tts()``
+                not called to load Vocos).
         """
-        if not (hasattr(model_instance, "tts") and hasattr(model_instance, "vocos")):
+        if not hasattr(self, "tts"):
             raise RuntimeError(
-                "MiniCPM-o 4.5 audio output requires a model instance with TTS "
-                "initialised.  Load the HuggingFace model separately with "
-                "AutoModel.from_pretrained(..., init_tts=True) then call "
-                "model.init_tts() before invoking decode_audio_tokens()."
+                "Audio output not initialised. "
+                "Start vLLM with --hf-overrides '{\"enable_audio_output\": true}' "
+                "and --trust-remote-code."
             )
-        # Cast to Any for dynamic dispatch into the HuggingFace model instance.
-        # The attributes (_generate_mel_spec, decode_mel_to_audio, tokenizer)
-        # are defined on openbmb/MiniCPM-o-2_6 but not on vLLM's base classes.
-        m: Any = model_instance
+        if not hasattr(self, "vocos"):
+            raise RuntimeError(
+                "Vocos vocoder not loaded. "
+                "Call model.init_tts() after loading to load assets/Vocos.pt."
+            )
+        # Dynamic dispatch: _generate_mel_spec and decode_mel_to_audio are
+        # defined on the HuggingFace MiniCPMO class (openbmb/MiniCPM-o-2_6)
+        # and are available when the model is loaded with trust_remote_code.
+        m: Any = self
         tokenizer = getattr(m, "tokenizer", None)
         if tokenizer is None:
             raise RuntimeError(
-                "model_instance.tokenizer is required to decode token_ids to text "
+                "self.tokenizer is required to decode token_ids to text "
                 "for TTS synthesis."
             )
-        text = tokenizer.decode(token_ids, skip_special_tokens=False)
+        text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
         mel_spec = m._generate_mel_spec(inputs=None, outputs=None, text=text)
         wav_numpy, _sr = m.decode_mel_to_audio(mel_spec)
         result: np.ndarray = (
