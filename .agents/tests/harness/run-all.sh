@@ -348,22 +348,22 @@ bash_payload() {
   echo "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$cmd\"}}"
 }
 
-# TP-9: Vague commit message (guard-4 block)
+# TP-9: Vague commit message (guard-4 strong warning — PostToolUse, not hard block)
 PAYLOAD=$(bash_payload "git commit -m 'fix'")
-BLOCKED=$(hook_blocks "commit-ai-guard.js" "$PAYLOAD")
-if [ "$BLOCKED" -eq 1 ]; then
-  pass "TP-9: 'fix' commit message → blocked (TP)"
+OUTPUT=$(echo "$PAYLOAD" | node "$HOOK_DIR/commit-ai-guard.js" 2>/dev/null || true)
+if echo "$OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'guard-4' in d['hookSpecificOutput']['additionalContext']" 2>/dev/null; then
+  pass "TP-9: 'fix' commit message → guard-4 warning fired (TP)"
 else
-  fail "TP-9: 'fix' commit message → should be blocked (FN — CRITICAL)"
+  fail "TP-9: 'fix' commit message → guard-4 warning should fire (FN — CRITICAL)"
 fi
 
-# TP-10: WIP commit message (guard-4 block)
+# TP-10: WIP commit message (guard-4 strong warning)
 PAYLOAD=$(bash_payload "git commit -m 'WIP'")
-BLOCKED=$(hook_blocks "commit-ai-guard.js" "$PAYLOAD")
-if [ "$BLOCKED" -eq 1 ]; then
-  pass "TP-10: 'WIP' commit message → blocked (TP)"
+OUTPUT=$(echo "$PAYLOAD" | node "$HOOK_DIR/commit-ai-guard.js" 2>/dev/null || true)
+if echo "$OUTPUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'guard-4' in d['hookSpecificOutput']['additionalContext']" 2>/dev/null; then
+  pass "TP-10: 'WIP' commit message → guard-4 warning fired (TP)"
 else
-  fail "TP-10: 'WIP' commit message → should be blocked (FN — CRITICAL)"
+  fail "TP-10: 'WIP' commit message → guard-4 warning should fire (FN — CRITICAL)"
 fi
 
 # TN-10: Descriptive commit message (not blocked)

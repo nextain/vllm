@@ -1,8 +1,8 @@
 {
   "hooks": {
-    "Write": [
+    "PostToolUse": [
       {
-        "matcher": ".*\\.py$",
+        "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
@@ -13,26 +13,9 @@
             "command": "node .claude/hooks/upstream-quality-check.js"
           }
         ]
-      }
-    ],
-    "Edit": [
+      },
       {
-        "matcher": ".*\\.py$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node .claude/hooks/spdx-header-check.js"
-          },
-          {
-            "type": "command",
-            "command": "node .claude/hooks/upstream-quality-check.js"
-          }
-        ]
-      }
-    ],
-    "Bash": [
-      {
-        "matcher": "git commit",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
