@@ -9,6 +9,18 @@ scope_decision:
   rationale: "테스트 범위가 너무 넓어짐. MiniCPM-o 전용으로 구현 후 실증."
   upstream_response: "upstream이 generality 요구 시 Luke가 직접 논의. 범위 확장은 별도 PR."
 
+implementation_principle:
+  rule: "코드는 가능한 한 간결하게"
+  rationale: |
+    실제 코드 리뷰가 필요할 수 있음 (Luke가 메인테이너 앞에서 모든 라인을 방어해야 함).
+    라인 수가 적을수록 리뷰 부담이 줄고, 설명이 쉬워지고, 메인테이너가 머지할 가능성이 높아짐.
+  constraints:
+    - "Protocol 정의: 필수 메서드만. 확장 가능성을 위한 메서드 미리 추가 금지"
+    - "MiniCPM-o 구현: Token2wav 연동만. 부가 기능 없음"
+    - "API 엔드포인트: OpenAI spec 최소 구현. 옵션 파라미터 최소화"
+    - "주석: 왜(why) 설명만. 무엇(what)은 코드가 말함"
+    - "헬퍼 함수: 두 곳 이상 쓰이지 않으면 만들지 않음"
+
 # ============================================================
 # SECTION 1: Background
 # ============================================================
