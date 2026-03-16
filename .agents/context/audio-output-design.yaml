@@ -168,6 +168,10 @@ upstream_strategy:
   step3: Get feedback on interface design before polishing PR
   step4: Polish to upstream quality standards (all harness gates pass)
   step5: Open PR with full test evidence and duplicate check
+  rfc_wait: |
+    After step2: wait 2 weeks for maintainer response.
+    No response after 2 weeks → proceed with PR-1 only (Protocol interface, no implementation).
+    Active pushback → adjust design per feedback before proceeding.
   rationale: |
     vLLM maintainers are skeptical of AI-generated PRs.
     RFC-first approach shows design thinking and invites collaboration,

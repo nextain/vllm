@@ -108,11 +108,12 @@ commit_ai_guard:
     - id: guard-4
       description: "WIP or fix as entire commit message (too vague)"
       regex: "^(WIP|wip|fix|Fix|FIX|temp|Temp|TEMP|test|Test)$"
-      behavior: "BLOCK — reject vague single-word messages"
-      tp_example: "commit -m 'fix' → blocked"
+      behavior: "WARN (strong) — PostToolUse fires after commit completes; cannot block. Strong warning only."
+      implementation_note: "Upgrading to PreToolUse + exit(2) would enable real blocking. Current design is advisory."
+      tp_example: "commit -m 'fix' → strong warning in output"
       tn_example: "commit -m 'fix(interfaces): add missing return type' → silent"
 
-  fn_target: 0%  # for guard-4 (block)
+  fn_target: 0%  # guard-4 must always fire on vague messages
   fp_target: <5%
 
 # ============================================================

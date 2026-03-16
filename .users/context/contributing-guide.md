@@ -87,3 +87,53 @@ Signed-off-by: Luke N <luke@nextain.io>
 2. 변경 내용과 이유
 3. 실행한 테스트 명령 + 결과 (터미널 출력 붙여넣기)
 4. AI 사용 도구 및 역할 명시
+
+## Claude Code Hook 작성 레퍼런스
+
+> 이 섹션을 읽지 않고 hook을 작성하면 같은 버그를 반복한다. (#73 실증)
+
+### 출력 스키마
+
+```javascript
+process.stdout.write(JSON.stringify({
+  reason: "",
+  hookSpecificOutput: {
+    hookEventName: "PostToolUse",  // or "PreToolUse"
+    additionalContext: "메시지"
+  }
+}))
+```
+
+### 트리거 타이밍
+
+| 트리거 | 실행 시점 | 블록 가능? |
+|--------|----------|-----------|
+| `PreToolUse` | 도구 실행 전 | ✅ `process.exit(2)` |
+| `PostToolUse` | 도구 실행 후 | ❌ advisory만 |
+
+### Node.js 환경
+
+```javascript
+// vLLM에 package.json 없음 → Node.js CJS 기본값
+const fs = require('fs')  // ✅
+
+// stdin 읽기
+async function main() {
+  let input = "";
+  for await (const chunk of process.stdin) { input += chunk; }
+  const data = JSON.parse(input);
+}
+main().catch(() => process.exit(0))
+```
+
+### settings.json 포맷
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "Edit|Write", "hooks": [{ "type": "command", "command": "node .claude/hooks/my-hook.js" }] }
+    ]
+  }
+}
+```

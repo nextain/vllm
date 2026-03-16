@@ -110,3 +110,53 @@ pr_description_ai:
     - No duplicate check mentioned
     - Missing AI disclosure when AI was used
     - WIP or incomplete work
+
+# ============================================================
+# SECTION 7: Claude Code hook reference (prevent guess bugs)
+# ============================================================
+claude_code_hook_reference:
+  rationale: "All 4 hook implementation bugs in Phase 1 came from guessing these values. Read this before writing any hook."
+
+  output_schema: |
+    process.stdout.write(JSON.stringify({
+      reason: "",
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse",  // or "PreToolUse"
+        additionalContext: "message string"
+      }
+    }))
+
+  trigger_timing:
+    PreToolUse:
+      fires: "before tool executes"
+      can_block: true
+      block_method: "process.exit(2)"
+    PostToolUse:
+      fires: "after tool executes"
+      can_block: false
+      use_for: "advisory warnings only"
+
+  node_environment:
+    module_system: "CommonJS — no package.json in vllm repo, Node.js defaults to CJS"
+    correct: "const fs = require('fs')"
+    wrong:   "import { readFileSync } from 'fs'  # ESM — fails without package.json type:module"
+    stdin_pattern: |
+      async function main() {
+        let input = "";
+        for await (const chunk of process.stdin) { input += chunk; }
+        // parse input as JSON
+      }
+      main().catch(() => process.exit(0))
+    wrong_stdin: "readFileSync('/dev/stdin')  # sync read fails in hook context"
+
+  settings_json_format: |
+    {
+      "hooks": {
+        "PostToolUse": [
+          { "matcher": "Edit|Write", "hooks": [{ "type": "command", "command": "node .claude/hooks/my-hook.js" }] },
+          { "matcher": "Bash",       "hooks": [{ "type": "command", "command": "node .claude/hooks/commit-hook.js" }] }
+        ]
+      }
+    }
+  settings_json_wrong: |
+    { "Write": [...], "Edit": [...] }  # top-level tool names — wrong format
