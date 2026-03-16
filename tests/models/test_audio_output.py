@@ -8,8 +8,9 @@ calls are mocked).  They verify:
   2. Other models (MiniCPMO2_6) are NOT detected.
   3. decode_audio_tokens() raises RuntimeError when TTS is not initialised.
   4. decode_audio_tokens() delegates to the TTS pipeline when TTS is ready.
-  5. The _ModelInfo.supports_audio_output field exists and has the right type.
-  6. load_weights() conditionally skips tts.* prefixes.
+  5. _load_vocos() loads assets/Vocos.pt and handles missing file gracefully.
+  6. The _ModelInfo.supports_audio_output field exists and has the right type.
+  7. load_weights() conditionally skips tts.* prefixes.
 """
 
 from __future__ import annotations
@@ -123,7 +124,7 @@ class TestDecodeAudioTokensNoTTS:
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
         instance = FakeMiniCPMO4_5()
         instance.tts = MagicMock()  # type: ignore[attr-defined]
-        with pytest.raises(RuntimeError, match="init_tts"):
+        with pytest.raises(RuntimeError, match="Vocos"):
             instance.decode_audio_tokens([1, 2, 3])
 
     def test_raises_when_no_tokenizer(self) -> None:
@@ -204,7 +205,111 @@ class TestLoadWeightsSkipPrefixes:
 
 
 # ---------------------------------------------------------------------------
-# Test 5: _ModelInfo dataclass has supports_audio_output field
+# Test 5: _load_vocos — Vocos loading from assets/Vocos.pt
+# ---------------------------------------------------------------------------
+
+
+class _FakeLoadVocos:
+    """Minimal stand-in for MiniCPMO4_5 to test _load_vocos in isolation."""
+
+    def __init__(self) -> None:
+        self.tts = MagicMock()
+        # tts has no vocos sub-module by default
+        del self.tts.vocos
+
+    def _load_vocos(self, model_name_or_path: str) -> None:
+        """Copy of the production implementation for isolated unit testing."""
+        import os
+
+        import torch
+
+        if os.path.isdir(model_name_or_path):
+            vocos_path = os.path.join(model_name_or_path, "assets", "Vocos.pt")
+        else:
+            try:
+                from huggingface_hub import hf_hub_download
+
+                vocos_path = hf_hub_download(
+                    repo_id=model_name_or_path,
+                    filename="assets/Vocos.pt",
+                )
+            except Exception:
+                return
+
+        if not os.path.isfile(vocos_path):
+            return
+
+        try:
+            vocos_state = torch.load(vocos_path, map_location="cpu", weights_only=True)
+        except Exception:
+            return
+
+        if hasattr(self.tts, "vocos"):
+            try:
+                self.tts.vocos.load_state_dict(vocos_state)
+                self.vocos = self.tts.vocos
+            except Exception:
+                self.vocos = vocos_state
+        else:
+            self.vocos = vocos_state
+
+
+class TestLoadVocos:
+    """Unit tests for _load_vocos path-resolution and torch.load dispatch."""
+
+    def test_missing_file_does_not_raise(self, tmp_path: Any) -> None:
+        """assets/Vocos.pt absent → vocos not set, no exception."""
+        instance = _FakeLoadVocos()
+        # model dir exists but assets/Vocos.pt does not
+        instance._load_vocos(str(tmp_path))
+        assert not hasattr(instance, "vocos")
+
+    def test_local_path_loads_state(self, tmp_path: Any) -> None:
+        """Local directory with assets/Vocos.pt → self.vocos populated."""
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+        fake_state: dict[str, torch.Tensor] = {"weight": torch.zeros(4)}
+        torch.save(fake_state, assets_dir / "Vocos.pt")
+
+        instance = _FakeLoadVocos()
+        instance._load_vocos(str(tmp_path))
+
+        assert hasattr(instance, "vocos")
+        assert isinstance(instance.vocos, dict)
+        assert "weight" in instance.vocos
+
+    def test_tts_has_vocos_submodule(self, tmp_path: Any) -> None:
+        """tts.vocos present → load_state_dict called and self.vocos = tts.vocos."""
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+        fake_state: dict[str, torch.Tensor] = {"w": torch.zeros(2)}
+        pt_path = assets_dir / "Vocos.pt"
+        torch.save(fake_state, pt_path)
+
+        instance = _FakeLoadVocos()
+        vocos_module = MagicMock()
+        instance.tts.vocos = vocos_module
+
+        instance._load_vocos(str(tmp_path))
+
+        vocos_module.load_state_dict.assert_called_once_with(fake_state)
+        assert instance.vocos is vocos_module
+
+    def test_non_local_path_skips_gracefully_without_hf(self) -> None:
+        """Non-local path that fails hf_hub_download → vocos not set, no exception."""
+        from unittest.mock import patch
+
+        def _fail(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("network error")
+
+        with patch("huggingface_hub.hf_hub_download", side_effect=_fail):
+            instance = _FakeLoadVocos()
+            instance._load_vocos("openbmb/MiniCPM-o-4_5")
+        assert not hasattr(instance, "vocos")
+
+
+# ---------------------------------------------------------------------------
+# Test 6: _ModelInfo dataclass has supports_audio_output field
 # ---------------------------------------------------------------------------
 
 

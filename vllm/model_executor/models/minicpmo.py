@@ -846,9 +846,9 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
     When ``enable_audio_output=True``:
     * ``self.tts`` is initialised as a ``ConditionalChatTTS`` module via
       ``trust_remote_code`` (requires ``--trust-remote-code``).
-    * ``self.vocos`` is **not** in the checkpoint; it must be loaded
-      separately via ``model.init_tts()``.  Call that once after
-      ``from_pretrained`` before invoking ``decode_audio_tokens()``.
+    * ``self.vocos`` is **not** in the checkpoint; it is loaded automatically
+      from ``assets/Vocos.pt`` in the model directory at the end of
+      ``load_weights()``.  No separate ``init_tts()`` call is required.
     """
 
     # SupportsAudioOutput class variables
@@ -862,6 +862,9 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
             self.apm = self.init_audio_module(
                 vllm_config=vllm_config, prefix=maybe_prefix(prefix, "apm")
             )
+
+        # Store for use in load_weights() (Vocos path resolution).
+        self._model_name_or_path: str = vllm_config.model_config.model
 
         if getattr(self.config, "enable_audio_output", False):
             self._init_tts_module(vllm_config)
@@ -903,14 +906,81 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         self.tts: nn.Module = tts_cls(tts_config)
         logger.info(
             "ConditionalChatTTS initialised for audio output "
-            "(vocos must still be loaded via model.init_tts())."
+            "(Vocos will be loaded from assets/Vocos.pt in load_weights)."
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         enable_tts = getattr(self.config, "enable_audio_output", False)
         skip: list[str] = [] if enable_tts else ["tts"]
         loader = AutoWeightsLoader(self, skip_prefixes=skip)
-        return loader.load_weights(weights)
+        loaded = loader.load_weights(weights)
+        if enable_tts and hasattr(self, "tts"):
+            self._load_vocos(self._model_name_or_path)
+        return loaded
+
+    def _load_vocos(self, model_name_or_path: str) -> None:
+        """Load ``assets/Vocos.pt`` and assign to ``self.vocos``.
+
+        Resolves the asset path from a local directory or HuggingFace repo.
+        If the file is missing a warning is logged and ``self.vocos`` is left
+        unset — ``decode_audio_tokens()`` will raise at call time.
+        """
+        if os.path.isdir(model_name_or_path):
+            vocos_path = os.path.join(model_name_or_path, "assets", "Vocos.pt")
+        else:
+            try:
+                from huggingface_hub import hf_hub_download
+
+                vocos_path = hf_hub_download(
+                    repo_id=model_name_or_path,
+                    filename="assets/Vocos.pt",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not download assets/Vocos.pt from %s: %s. "
+                    "Audio output will not be available.",
+                    model_name_or_path,
+                    exc,
+                )
+                return
+
+        if not os.path.isfile(vocos_path):
+            logger.warning(
+                "assets/Vocos.pt not found at %s. Audio output will not be available.",
+                vocos_path,
+            )
+            return
+
+        try:
+            vocos_state = torch.load(vocos_path, map_location="cpu", weights_only=True)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load assets/Vocos.pt from %s: %s. "
+                "Audio output will not be available.",
+                vocos_path,
+                exc,
+            )
+            return
+
+        if hasattr(self.tts, "vocos"):
+            # ConditionalChatTTS carries a Vocos sub-module; load state dict.
+            try:
+                self.tts.vocos.load_state_dict(vocos_state)  # type: ignore[union-attr]
+                self.vocos = self.tts.vocos
+            except Exception as exc:
+                logger.warning(
+                    "load_state_dict for Vocos failed: %s. "
+                    "Falling back to assigning raw state.",
+                    exc,
+                )
+                self.vocos = vocos_state
+        else:
+            # Fallback: store raw state; init_tts() style models populate self.vocos
+            # directly.  HF modeling_minicpmo.init_tts() assigns self.vocos as an
+            # nn.Module — replicate that expectation best-effort.
+            self.vocos = vocos_state
+
+        logger.info("Vocos vocoder loaded from %s.", vocos_path)
 
     def decode_audio_tokens(
         self,
@@ -925,9 +995,8 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         the TTS text span.
 
         The model must have been started with
-        ``--hf-overrides '{"enable_audio_output": true}'`` and
-        ``model.init_tts()`` must have been called to load the Vocos
-        vocoder from ``assets/Vocos.pt`` in the model directory.
+        ``--hf-overrides '{"enable_audio_output": true}'``.  Vocos is loaded
+        automatically from ``assets/Vocos.pt`` during ``load_weights()``.
 
         Args:
             token_ids: Token IDs from the main LLM output that include the
@@ -950,7 +1019,7 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         if not hasattr(self, "vocos"):
             raise RuntimeError(
                 "Vocos vocoder not loaded. "
-                "Call model.init_tts() after loading to load assets/Vocos.pt."
+                "Ensure assets/Vocos.pt is present in the model directory."
             )
         # Dynamic dispatch: _generate_mel_spec and decode_mel_to_audio are
         # defined on the HuggingFace MiniCPMO class (openbmb/MiniCPM-o-2_6)
