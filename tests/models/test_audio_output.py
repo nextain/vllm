@@ -49,18 +49,13 @@ def _make_fake_minicpmo4_5() -> type[SupportsAudioOutput]:
             token_ids: list[int],
         ) -> tuple[np.ndarray, str] | None:
             if not hasattr(self, "tts"):
-                raise RuntimeError(
-                    "Audio output not initialised. "
-                    "Start vLLM with --hf-overrides '{\"enable_audio_output\": true}' "
-                    "and --trust-remote-code."
-                )
+                # TTS not loaded (enable_audio_output=False) — return None,
+                # same as the real MiniCPMO4_5 implementation.
+                return None
             audio_tok = getattr(self.tts, "audio_tokenizer", None)
             if audio_tok is None:
-                raise RuntimeError(
-                    "Token2wav audio tokenizer not loaded. "
-                    "Install stepaudio2 via: pip install minicpmo-utils[all] "
-                    "and ensure assets/token2wav/ is present."
-                )
+                # Token2wav not loaded — return None, same as real impl.
+                return None
             tokenizer = getattr(self, "tokenizer", None)
             if tokenizer is None:
                 raise RuntimeError("self.tokenizer is required.")
@@ -122,21 +117,36 @@ class TestSupportsAudioOutputDetection:
 
 
 class TestDecodeAudioTokensNoTTS:
-    def test_raises_when_no_tts_attr(self) -> None:
+    def test_returns_none_when_no_tts_attr(self) -> None:
+        """No tts attr → None (enable_audio_output=False, not an error)."""
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
         instance = FakeMiniCPMO4_5()
-        with pytest.raises(RuntimeError, match="enable_audio_output"):
-            instance.decode_audio_tokens([1, 2, 3])
+        assert instance.decode_audio_tokens([1, 2, 3]) is None
 
-    def test_raises_when_tts_but_no_audio_tokenizer(self) -> None:
-        """tts present but audio_tokenizer is None → Token2wav error."""
+    def test_returns_none_when_tts_but_no_audio_tokenizer(self) -> None:
+        """tts present but audio_tokenizer is None → None (Token2wav not loaded)."""
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
         instance = FakeMiniCPMO4_5()
         instance.tts = MagicMock()  # type: ignore[attr-defined]
-        # audio_tokenizer attribute returns None by default on MagicMock
         instance.tts.audio_tokenizer = None
-        with pytest.raises(RuntimeError, match="Token2wav"):
-            instance.decode_audio_tokens([1, 2, 3])
+        assert instance.decode_audio_tokens([1, 2, 3]) is None
+
+    def test_returns_none_when_no_tts_attr_real_model(self) -> None:
+        """Real MiniCPMO4_5: no tts attr → None (enable_audio_output=False)."""
+        from vllm.model_executor.models.minicpmo import MiniCPMO4_5
+
+        instance = MiniCPMO4_5.__new__(MiniCPMO4_5)
+        # No self.tts — simulate model loaded without enable_audio_output.
+        assert instance.decode_audio_tokens([1, 2, 3]) is None
+
+    def test_returns_none_when_audio_tokenizer_none_real_model(self) -> None:
+        """Real MiniCPMO4_5: tts present but Token2wav not loaded → None."""
+        from vllm.model_executor.models.minicpmo import MiniCPMO4_5
+
+        instance = MiniCPMO4_5.__new__(MiniCPMO4_5)
+        instance.tts = MagicMock()  # type: ignore[attr-defined]
+        instance.tts.audio_tokenizer = None
+        assert instance.decode_audio_tokens([1, 2, 3]) is None
 
     def test_raises_when_no_tokenizer(self) -> None:
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()

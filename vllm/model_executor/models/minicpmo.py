@@ -1103,22 +1103,19 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
             span (i.e. no ``<|tts_bos|>`` marker).
 
         Raises:
-            RuntimeError: If TTS is not initialised or Token2wav is not
-                loaded (see individual error messages for remediation).
+            RuntimeError: If ``self.tokenizer`` is absent (internal error).
         """
         if not hasattr(self, "tts"):
-            raise RuntimeError(
-                "Audio output not initialised. "
-                "Start vLLM with --hf-overrides '{\"enable_audio_output\": true}' "
-                "and --trust-remote-code."
-            )
+            # enable_audio_output=False (default): TTS weights not loaded.
+            # Return None so the caller treats this request as text-only.
+            # This is not an error — the user simply did not enable TTS.
+            return None
         audio_tok = getattr(self.tts, "audio_tokenizer", None)
         if audio_tok is None:
-            raise RuntimeError(
-                "Token2wav audio tokenizer not loaded. "
-                "Install stepaudio2 via: pip install minicpmo-utils[all] "
-                "and ensure assets/token2wav/ is present in the model directory."
-            )
+            # Token2wav failed to load during _init_token2wav().  A warning
+            # was already logged there; return None rather than raising so
+            # existing requests are not disrupted.
+            return None
         tokenizer = getattr(self, "tokenizer", None)
         if tokenizer is None:
             raise RuntimeError(
