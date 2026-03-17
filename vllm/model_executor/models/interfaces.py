@@ -1526,31 +1526,27 @@ class SupportsAudioOutput(Protocol):
         self,
         token_ids: list[int],
     ) -> "tuple[np.ndarray, str] | None":
-        """Decode audio token IDs to a waveform and TTS transcript.
+        """Decode a sequence of output token IDs to a waveform and transcript.
 
         This is an **instance method** (not a classmethod) because audio
-        output requires initialised model state (``self.tts``, ``self.tts.audio_tokenizer``)
-        that a classmethod cannot access.  This differs from
+        synthesis requires initialised model state (vocoder weights, speaker
+        embeddings, etc.) that a classmethod cannot access.  This differs from
         ``SupportsTranscription`` methods, which are classmethods because ASR
         processing is stateless.
 
-        Called on the serving model instance.  The model must have been started
-        with ``--hf-overrides '{"enable_audio_output": true}'``.
-
         Args:
-            token_ids: Token IDs from the main LLM output that contain the
-                TTS text span (``<|tts_bos|>...<|tts_eos|>``).
+            token_ids: Token IDs from the main LLM output that may contain a
+                TTS span.  The model is responsible for locating any embedded
+                TTS span within this sequence.
 
         Returns:
-            ``(waveform, transcript)`` where *waveform* is a float32 array
-            with shape ``[num_samples]`` and *transcript* is the plain text
-            of the TTS span (the text that was spoken).  Returns ``None`` if
-            ``token_ids`` contain no TTS span (i.e. no ``<|tts_bos|>``
-            marker).  The caller must treat ``None`` as "no audio for this
-            request" and skip WAV encoding.
-
-        Raises:
-            RuntimeError: If TTS is not initialised on this model instance.
+            ``(waveform, transcript)`` where *waveform* is a ``float32``
+            NumPy array with shape ``[num_samples]`` at the sample rate given
+            by :attr:`audio_output_sample_rate`, and *transcript* is the plain
+            text that was synthesised.  Returns ``None`` if ``token_ids``
+            contain no TTS span or if audio synthesis is disabled/unavailable
+            for this model instance.  The caller must treat ``None`` as
+            "no audio for this request" and skip WAV encoding.
         """
         ...
 

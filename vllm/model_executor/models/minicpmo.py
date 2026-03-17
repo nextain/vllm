@@ -1103,7 +1103,9 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
             span (i.e. no ``<|tts_bos|>`` marker).
 
         Raises:
-            RuntimeError: If ``self.tokenizer`` is absent (internal error).
+            RuntimeError: If ``self.tokenizer`` is absent, which is an
+                internal invariant violation (tokenizer is always set by
+                ``__init__`` via the parent class).
         """
         if not hasattr(self, "tts"):
             # enable_audio_output=False (default): TTS weights not loaded.
