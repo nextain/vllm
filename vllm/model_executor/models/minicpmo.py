@@ -25,6 +25,7 @@
 """Inference-only MiniCPM-O model compatible with HuggingFace weights."""
 
 import contextlib
+import io
 import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
@@ -1109,8 +1110,6 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 "self.tokenizer is required to decode token_ids to text "
                 "for TTS synthesis."
             )
-        import io
-
         import soundfile as sf
 
         # Extract the TTS-destined span between the special markers.

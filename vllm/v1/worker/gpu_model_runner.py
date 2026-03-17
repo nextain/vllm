@@ -3,6 +3,7 @@
 
 import functools
 import gc
+import io
 import itertools
 import threading
 import time
@@ -4086,8 +4087,6 @@ class GPUModelRunner(
             audio_outputs: dict[str, bytes | None] | None = None
             if self._pending_audio_token_ids:
                 self._sync_device()
-                import io
-
                 import soundfile as _sf
 
                 audio_outputs = {}
