@@ -72,6 +72,7 @@ from vllm.model_executor.models.interfaces import (
     SupportsMultiModal,
     SupportsXDRoPE,
     is_mixture_of_experts,
+    supports_audio_output,
     supports_eagle3,
     supports_mrope,
     supports_multimodal_pruning,
@@ -4581,11 +4582,7 @@ class GPUModelRunner(
                 self.model = model_loader.load_model(
                     vllm_config=self.vllm_config, model_config=self.model_config
                 )
-                from vllm.model_executor.models.interfaces import (
-                    supports_audio_output as _sao,
-                )
-
-                self._supports_audio_output = _sao(self.model)
+                self._supports_audio_output = supports_audio_output(self.model)
                 if self.lora_config:
                     self.model = self.load_lora_model(
                         self.model, self.vllm_config, self.device

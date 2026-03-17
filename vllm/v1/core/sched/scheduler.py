@@ -30,6 +30,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
     RoutedExpertsReader,
 )
+from vllm.model_executor.models.registry import ModelRegistry
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.multimodal.encoder_budget import MultiModalBudget
 from vllm.v1.core.encoder_cache_manager import (
@@ -180,8 +181,6 @@ class Scheduler(SchedulerInterface):
         # the corresponding audio bytes arrive in the next step's
         # ModelRunnerOutput.audio_outputs.  Maps req_id →
         # (client_index, EngineCoreOutput).
-        from vllm.model_executor.models.registry import ModelRegistry
-
         try:
             _model_info, _ = ModelRegistry.inspect_model_cls(
                 vllm_config.model_config.architectures or [],
@@ -2025,8 +2024,7 @@ class Scheduler(SchedulerInterface):
     def shutdown(self) -> None:
         if self._held_engine_core_outputs:
             logger.warning(
-                "Scheduler shutting down with %d pending audio outputs; "
-                "discarding.",
+                "Scheduler shutting down with %d pending audio outputs; discarding.",
                 len(self._held_engine_core_outputs),
             )
             self._held_engine_core_outputs.clear()

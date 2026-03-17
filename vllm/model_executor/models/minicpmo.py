@@ -27,6 +27,7 @@
 import contextlib
 import io
 import os
+import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
@@ -1048,8 +1049,6 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         # spectrogram from the first reference; once self.cache is set,
         # subsequent __call__() invocations skip _prepare_prompt() entirely,
         # so decode_audio_tokens() needs no temporary file.
-        import tempfile
-
         import soundfile as _sf
 
         ref_wav: np.ndarray = np.zeros(16000, dtype=np.float32)
@@ -1136,6 +1135,7 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         # Only import soundfile once we know we actually need to synthesise
         # audio.  This keeps the early-return path free of optional deps.
         import soundfile as sf
+
         text = raw_text.split("<|tts_bos|>")[-1]
         if "<|tts_eos|>" in text:
             text = text.split("<|tts_eos|>")[0]
