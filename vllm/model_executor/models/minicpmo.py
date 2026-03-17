@@ -844,10 +844,10 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
     in-process and enable ``decode_audio_tokens()``.
 
     When ``enable_audio_output=True``:
-    * ``self.tts`` is initialised as a ``ConditionalChatTTS`` module via
+    * ``self.tts`` is initialised as a ``MiniCPMTTS`` module via
       ``trust_remote_code`` (requires ``--trust-remote-code``).
-    * ``self.vocos`` is **not** in the checkpoint; it is loaded automatically
-      from ``assets/Vocos.pt`` in the model directory at the end of
+    * ``Token2wav`` (``self.tts.audio_tokenizer``) is loaded automatically
+      from ``assets/token2wav/`` in the model directory at the end of
       ``load_weights()``.  No separate ``init_tts()`` call is required.
     """
 

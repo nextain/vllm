@@ -1526,7 +1526,7 @@ class SupportsAudioOutput(Protocol):
         """Decode audio token IDs to a waveform (float32, shape [samples]).
 
         This is an **instance method** (not a classmethod) because audio
-        output requires initialised model state (``self.tts``, ``self.vocos``)
+        output requires initialised model state (``self.tts``, ``self.tts.audio_tokenizer``)
         that a classmethod cannot access.  This differs from
         ``SupportsTranscription`` methods, which are classmethods because ASR
         processing is stateless.
