@@ -26,7 +26,6 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-import torch
 
 from vllm.model_executor.models.interfaces import (
     SupportsAudioOutput,
@@ -48,7 +47,7 @@ def _make_fake_minicpmo4_5() -> type[SupportsAudioOutput]:
         def decode_audio_tokens(
             self,
             token_ids: list[int],
-        ) -> "tuple[np.ndarray, str] | None":
+        ) -> tuple[np.ndarray, str] | None:
             if not hasattr(self, "tts"):
                 raise RuntimeError(
                     "Audio output not initialised. "
@@ -70,10 +69,11 @@ def _make_fake_minicpmo4_5() -> type[SupportsAudioOutput]:
                 text = text.split("<|tts_bos|>")[-1]
             if "<|tts_eos|>" in text:
                 text = text.split("<|tts_eos|>")[0]
-            # MiniCPMTTS + Token2wav synthesis pipeline (TODO in production).
+            # Sentinel: synthesis requires GPU + model weights.  This fake
+            # raises here so unit tests can isolate protocol-contract checks
+            # from actual synthesis.  The real MiniCPMO4_5 is fully wired.
             raise RuntimeError(
-                "decode_audio_tokens: MiniCPMTTS + Token2wav synthesis is not "
-                "yet wired in the vLLM serving path."
+                "decode_audio_tokens: MiniCPMTTS + Token2wav synthesis not yet wired"
             )
 
     return FakeMiniCPMO4_5  # type: ignore[return-value]
@@ -186,7 +186,9 @@ class TestDecodeAudioTokensNoTTS:
         instance.tts = MagicMock()  # type: ignore[attr-defined]
         instance.tts.audio_tokenizer = MagicMock()
         instance.tokenizer = MagicMock()  # type: ignore[attr-defined]
-        instance.tokenizer.decode.return_value = "preamble<|tts_bos|>Hello world<|tts_eos|>"
+        instance.tokenizer.decode.return_value = (
+            "preamble<|tts_bos|>Hello world<|tts_eos|>"
+        )
         # decode_audio_tokens extracts the TTS span but then calls into TTS
         # synthesis which is not available in unit tests.  We only test that
         # the early-return path is NOT taken (i.e., result is not None) and
@@ -266,9 +268,7 @@ class _FakeInitToken2wav:
             return
 
         if os.path.isdir(model_name_or_path):
-            token2wav_dir = os.path.join(
-                model_name_or_path, "assets", "token2wav"
-            )
+            token2wav_dir = os.path.join(model_name_or_path, "assets", "token2wav")
         else:
             try:
                 from huggingface_hub import snapshot_download
@@ -328,7 +328,9 @@ class TestInitToken2wav:
         fake_token2wav_instance = MagicMock()
         FakeToken2wav = MagicMock(return_value=fake_token2wav_instance)
 
-        with patch.dict("sys.modules", {"stepaudio2": MagicMock(Token2wav=FakeToken2wav)}):
+        with patch.dict(
+            "sys.modules", {"stepaudio2": MagicMock(Token2wav=FakeToken2wav)}
+        ):
             instance._init_token2wav(str(tmp_path))
 
         FakeToken2wav.assert_called_once_with(str(token2wav_dir))
@@ -342,8 +344,14 @@ class TestInitToken2wav:
         def fake_snapshot_download(*args: Any, **kwargs: Any) -> None:
             raise RuntimeError("network error")
 
-        with patch.dict("sys.modules", {"stepaudio2": MagicMock(Token2wav=FakeToken2wav)}), \
-             patch("huggingface_hub.snapshot_download", side_effect=fake_snapshot_download):
+        with (
+            patch.dict(
+                "sys.modules", {"stepaudio2": MagicMock(Token2wav=FakeToken2wav)}
+            ),
+            patch(
+                "huggingface_hub.snapshot_download", side_effect=fake_snapshot_download
+            ),
+        ):
             instance._init_token2wav("openbmb/MiniCPM-o-4_5")
 
         FakeToken2wav.assert_not_called()
