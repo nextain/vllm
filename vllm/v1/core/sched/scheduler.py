@@ -1415,6 +1415,7 @@ class Scheduler(SchedulerInterface):
 
             routed_experts = None
             finish_reason = None
+            finished = False
             if stopped:
                 routed_experts = self._get_routed_experts(request)
 
