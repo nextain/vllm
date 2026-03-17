@@ -294,9 +294,19 @@ e2e_validation:
 
   known_issues:
     - "vllm 0.17.1 prebuilt + overlay 방식은 임시 검증용. 업스트림 PR은 fork 코드 기반."
-    - "scheduler.py finished=False 버그: fork 코드에도 동일 버그 잠재. upstream PR 전 수정 필요."
     - "TTS 전체 경로 검증(WAV 바이트 확인)은 오디오 입력 있는 테스트케이스로 별도 진행 필요."
 
+  resolved_issues:
+    - issue: "scheduler.py finished=False UnboundLocalError"
+      fixed_in: "fdc3801 fix(scheduler): add finished=False default"
+    - issue: "scheduler _held_engine_core_outputs 메모리 누수 (빈 output_token_ids 요청)"
+      fixed_in: "6d453c8 fix(audio): plug held-output leak"
+    - issue: "serving.py transcript=output.text (의미 오류)"
+      fixed_in: "03d65ad fix(audio): upstream review — transcript pipeline"
+    - issue: "serving.py/test 스테일 주석"
+      fixed_in: "d867000 docs(audio): fix stale comments"
+
   next_steps:
-    - "Phase 3: Sync + Commit (nextain/vllm에 SPDX + AI disclosure + Signed-off-by 커밋)"
-    - "Phase 4: Luke가 vllm-project/vllm에 Design Issue 오픈 후 PR 3단계 진행"
+    - "Phase 3 완료: 모든 커밋 nextain/vllm main에 push 완료 (d867000)"
+    - "Phase 4: TTS WAV 바이트 검증 — RunPod 재시작 후 오디오 입력 포함 테스트케이스로 진행"
+    - "Phase 5: Luke가 vllm-project/vllm에 Design Issue 오픈 후 PR 3단계 진행"

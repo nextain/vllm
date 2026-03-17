@@ -139,12 +139,18 @@ POST /v1/chat/completions
 **결론**: 서빙 경로 전체(`gpu_model_runner → outputs → scheduler → engine/__init__ → output_processor → outputs.py → serving.py`)가 `audio_output` 필드를 크래시 없이 전파함을 확인.
 
 **알려진 이슈**:
-- `scheduler.py` `finished=False` 버그: fork 코드에도 잠재. upstream PR 전 수정 필요.
 - TTS 전체 경로 검증(실제 WAV 바이트)은 오디오 입력 있는 테스트케이스로 별도 진행 필요.
 
+**수정 완료**:
+- `scheduler.py` `finished=False` UnboundLocalError → `fdc3801` 수정
+- `_held_engine_core_outputs` 메모리 누수 (빈 토큰 요청) → `6d453c8` 수정
+- `serving.py` `transcript=output.text` 의미 오류 → `03d65ad` 수정
+- `serving.py`/테스트 스테일 주석 → `d867000` 수정
+
 **다음 단계**:
-- Phase 3: nextain/vllm 커밋 (SPDX + AI disclosure + Signed-off-by)
-- Phase 4: Luke가 vllm-project/vllm에 Design Issue 오픈 후 PR 3단계 진행
+- Phase 3 완료: 모든 커밋 nextain/vllm main 푸시 완료 (최신: `d867000`)
+- Phase 4: TTS WAV 바이트 검증 — RunPod 재시작 후 오디오 입력 포함 테스트케이스
+- Phase 5: Luke가 vllm-project/vllm에 Design Issue 오픈 후 PR 3단계 진행
 
 ---
 
