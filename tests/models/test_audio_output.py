@@ -8,8 +8,10 @@ calls are mocked).  They verify:
   2. Other models (MiniCPMO2_6) are NOT detected.
   3. decode_audio_tokens() raises RuntimeError when TTS is not initialised.
   4. decode_audio_tokens() raises when Token2wav audio_tokenizer is absent.
-  5. decode_audio_tokens() raises a clear "not yet wired" error when all
-     modules are present (synthesis pipeline is a TODO).
+  5. The FakeMiniCPMO4_5 stub raises a sentinel error when all modules are
+     present — isolating the protocol contract from the synthesis pipeline.
+     The real MiniCPMO4_5.decode_audio_tokens() is fully implemented and
+     tested via E2E (tests/models/test_audio_output_e2e.py).
   6. _init_token2wav() loads Token2wav and handles missing stepaudio2/dir.
   7. The _ModelInfo.supports_audio_output field exists and has the right type.
   8. load_weights() conditionally skips tts.* prefixes.
@@ -145,9 +147,10 @@ class TestDecodeAudioTokensNoTTS:
         with pytest.raises(RuntimeError, match="tokenizer"):
             instance.decode_audio_tokens([1, 2, 3])
 
-    def test_raises_not_yet_wired_when_fully_initialised(self) -> None:
-        """When tts + audio_tokenizer + tokenizer are all set, the synthesis
-        pipeline raises a clear 'not yet wired' error (work in progress)."""
+    def test_raises_sentinel_when_fully_initialised(self) -> None:
+        """When tts + audio_tokenizer + tokenizer are all present the fake
+        stub reaches the sentinel raise — isolating protocol contract tests
+        from actual synthesis (which requires GPU + model weights)."""
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
         instance = FakeMiniCPMO4_5()
         instance.tts = MagicMock()  # type: ignore[attr-defined]
