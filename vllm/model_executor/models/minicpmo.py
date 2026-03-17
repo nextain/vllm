@@ -24,6 +24,7 @@
 # limitations under the License.
 """Inference-only MiniCPM-O model compatible with HuggingFace weights."""
 
+import contextlib
 import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
@@ -831,6 +832,11 @@ class MiniCPMO2_6(MiniCPMOBaseModel, MiniCPMV2_6):
             )
 
 
+# Guard flag so _patch_torchaudio_for_soundfile() is truly idempotent even
+# when called from multiple model instances in the same process.
+_TORCHAUDIO_SOUNDFILE_PATCHED: bool = False
+
+
 def _patch_torchaudio_for_soundfile() -> None:
     """Patch ``torchaudio.load`` and ``torchaudio.save`` to use soundfile.
 
@@ -842,23 +848,23 @@ def _patch_torchaudio_for_soundfile() -> None:
     This function is called once from ``_init_token2wav()`` before
     ``Token2wav`` is first used.  Subsequent calls are idempotent.
     """
+    global _TORCHAUDIO_SOUNDFILE_PATCHED
+    if _TORCHAUDIO_SOUNDFILE_PATCHED:
+        return
+
     try:
         import soundfile as _sf
         import torchaudio as _torchaudio
     except ImportError:
         return  # either absent; Token2wav will surface its own error
 
-    def _sf_load(
-        path: Any, *args: Any, **kwargs: Any
-    ) -> tuple[torch.Tensor, int]:
+    def _sf_load(path: Any, *args: Any, **kwargs: Any) -> tuple[torch.Tensor, int]:
         _data, _sr = _sf.read(str(path), dtype="float32", always_2d=True)
         # soundfile returns [samples, channels]; torchaudio expects
         # [channels, samples].
         return torch.tensor(_data.T, dtype=torch.float32), int(_sr)
 
-    def _sf_save(
-        uri: Any, src: torch.Tensor, sample_rate: int, **kwargs: Any
-    ) -> None:
+    def _sf_save(uri: Any, src: torch.Tensor, sample_rate: int, **kwargs: Any) -> None:
         _arr = src.cpu().numpy()
         if kwargs.get("channels_first", True) and _arr.ndim == 2:
             _arr = _arr.T  # [channels, samples] → [samples, channels]
@@ -866,6 +872,7 @@ def _patch_torchaudio_for_soundfile() -> None:
 
     _torchaudio.load = _sf_load  # type: ignore[assignment]
     _torchaudio.save = _sf_save  # type: ignore[assignment]
+    _TORCHAUDIO_SOUNDFILE_PATCHED = True
 
 
 class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
@@ -979,9 +986,7 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
             return
 
         if os.path.isdir(model_name_or_path):
-            token2wav_dir = os.path.join(
-                model_name_or_path, "assets", "token2wav"
-            )
+            token2wav_dir = os.path.join(model_name_or_path, "assets", "token2wav")
         else:
             try:
                 from huggingface_hub import snapshot_download
@@ -1051,10 +1056,8 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
             )
         finally:
             if tmp_ref_path is not None:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(tmp_ref_path)
-                except OSError:
-                    pass
 
     def decode_audio_tokens(
         self,

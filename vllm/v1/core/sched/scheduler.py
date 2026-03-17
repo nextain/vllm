@@ -189,6 +189,11 @@ class Scheduler(SchedulerInterface):
             )
             self._model_supports_audio_output: bool = _model_info.supports_audio_output
         except Exception:
+            logger.warning(
+                "Could not determine audio output support for model %s; "
+                "audio output disabled.",
+                vllm_config.model_config.model,
+            )
             self._model_supports_audio_output = False
         self._held_engine_core_outputs: dict[str, tuple[int, EngineCoreOutput]] = {}
 
