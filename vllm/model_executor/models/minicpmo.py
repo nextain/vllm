@@ -831,6 +831,43 @@ class MiniCPMO2_6(MiniCPMOBaseModel, MiniCPMV2_6):
             )
 
 
+def _patch_torchaudio_for_soundfile() -> None:
+    """Patch ``torchaudio.load`` and ``torchaudio.save`` to use soundfile.
+
+    ``torchaudio`` 2.10+ hardcodes both functions to TorchCodec which
+    requires FFmpeg shared libraries (``libavutil``).  Replacing them with
+    ``soundfile`` (libsndfile) equivalents removes the FFmpeg dependency;
+    libsndfile handles WAV natively.
+
+    This function is called once from ``_init_token2wav()`` before
+    ``Token2wav`` is first used.  Subsequent calls are idempotent.
+    """
+    try:
+        import soundfile as _sf
+        import torchaudio as _torchaudio
+    except ImportError:
+        return  # either absent; Token2wav will surface its own error
+
+    def _sf_load(
+        path: Any, *args: Any, **kwargs: Any
+    ) -> tuple[torch.Tensor, int]:
+        _data, _sr = _sf.read(str(path), dtype="float32", always_2d=True)
+        # soundfile returns [samples, channels]; torchaudio expects
+        # [channels, samples].
+        return torch.tensor(_data.T, dtype=torch.float32), int(_sr)
+
+    def _sf_save(
+        uri: Any, src: torch.Tensor, sample_rate: int, **kwargs: Any
+    ) -> None:
+        _arr = src.cpu().numpy()
+        if kwargs.get("channels_first", True) and _arr.ndim == 2:
+            _arr = _arr.T  # [channels, samples] → [samples, channels]
+        _sf.write(uri, _arr, sample_rate, format="WAV")
+
+    _torchaudio.load = _sf_load  # type: ignore[assignment]
+    _torchaudio.save = _sf_save  # type: ignore[assignment]
+
+
 class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
     """MiniCPM-O 4.5 model with Qwen3 backbone.
 
@@ -981,6 +1018,43 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 token2wav_dir,
                 exc,
             )
+            return
+
+        # Patch torchaudio once (before any Token2wav call) so that
+        # torchaudio.load/save use soundfile instead of TorchCodec.
+        _patch_torchaudio_for_soundfile()
+
+        # Pre-warm Token2wav's internal prompt cache with a 1-second silent
+        # 16 kHz reference WAV.  Token2wav caches speaker embedding and mel
+        # spectrogram from the first reference; once self.cache is set,
+        # subsequent __call__() invocations skip _prepare_prompt() entirely,
+        # so decode_audio_tokens() needs no temporary file.
+        import tempfile
+
+        import soundfile as _sf
+
+        ref_wav: np.ndarray = np.zeros(16000, dtype=np.float32)
+        tmp_ref_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                tmp_ref_path = f.name
+            _sf.write(tmp_ref_path, ref_wav, 16000)
+            self.tts.audio_tokenizer.cache = (  # type: ignore[union-attr]
+                self.tts.audio_tokenizer._prepare_prompt(tmp_ref_path)  # type: ignore[union-attr]
+            )
+            logger.info("Token2wav prompt cache primed with silent reference.")
+        except Exception as exc:
+            logger.warning(
+                "Could not pre-warm Token2wav cache: %s. "
+                "The first decode_audio_tokens() call will initialise it.",
+                exc,
+            )
+        finally:
+            if tmp_ref_path is not None:
+                try:
+                    os.unlink(tmp_ref_path)
+                except OSError:
+                    pass
 
     def decode_audio_tokens(
         self,
@@ -1033,41 +1107,8 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 "for TTS synthesis."
             )
         import io
-        import tempfile
 
         import soundfile as sf
-
-        # torchaudio 2.10+ hardcodes both torchaudio.load() and
-        # torchaudio.save() to use TorchCodec, which requires FFmpeg shared
-        # libraries (libavutil).  Patch both with soundfile (libsndfile)
-        # equivalents; libsndfile handles WAV natively without FFmpeg.
-        try:
-            import torchaudio as _torchaudio
-
-            def _soundfile_load(
-                path: Any, *args: Any, **kwargs: Any
-            ) -> tuple[torch.Tensor, int]:
-                _data, _sr = sf.read(str(path), dtype="float32", always_2d=True)
-                # soundfile: [samples, channels]; torchaudio: [channels, samples]
-                return torch.tensor(_data.T, dtype=torch.float32), int(_sr)
-
-            def _soundfile_save(
-                uri: Any,
-                src: torch.Tensor,
-                sample_rate: int,
-                channels_first: bool = True,
-                format: Any = None,  # noqa: A002
-                **kwargs: Any,
-            ) -> None:
-                _arr = src.cpu().numpy()
-                if channels_first and _arr.ndim == 2:
-                    _arr = _arr.T  # [channels, samples] → [samples, channels]
-                sf.write(uri, _arr, sample_rate, format="WAV")
-
-            _torchaudio.load = _soundfile_load  # type: ignore[assignment]
-            _torchaudio.save = _soundfile_save  # type: ignore[assignment]
-        except ImportError:
-            pass  # torchaudio absent; Token2wav will fail later with a clear error
 
         # Extract the TTS-destined span between the special markers.
         text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
@@ -1130,28 +1171,10 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         # Extract VQ codebook 0 to obtain the required flat list.
         audio_codes: list[int] = gen_out.new_ids[0, :, 0].tolist()
 
-        # Token2wav requires a reference WAV for speaker embedding via
-        # campplus.onnx; None is not valid.  Write a 1-second silent WAV at
-        # 16 kHz to serve as a neutral default speaker reference.
-        ref_wav: np.ndarray = np.zeros(16000, dtype=np.float32)
-        tmp_ref_path: str | None = None
-        wav_bytes: bytes = b""
-        try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".wav", delete=False
-            ) as f:
-                tmp_ref_path = f.name
-            sf.write(tmp_ref_path, ref_wav, 16000)
-            wav_bytes = self.tts.audio_tokenizer(
-                audio_codes,
-                tmp_ref_path,
-            )
-        finally:
-            if tmp_ref_path is not None:
-                try:
-                    os.unlink(tmp_ref_path)
-                except OSError:
-                    pass
+        # Token2wav.cache was pre-warmed in _init_token2wav() with a silent
+        # reference WAV; __call__() skips _prepare_prompt() when cache is
+        # already set, so the second argument is not used here.
+        wav_bytes: bytes = self.tts.audio_tokenizer(audio_codes, None)
 
         waveform, _ = sf.read(io.BytesIO(wav_bytes))
         return np.array(waveform, dtype=np.float32)
