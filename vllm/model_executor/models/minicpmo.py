@@ -863,20 +863,22 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 vllm_config=vllm_config, prefix=maybe_prefix(prefix, "apm")
             )
 
-        # Store for use in load_weights() (Vocos path resolution).
+        # Store for use in load_weights() (Token2wav path resolution).
         self._model_name_or_path: str = vllm_config.model_config.model
 
         if getattr(self.config, "enable_audio_output", False):
             self._init_tts_module(vllm_config)
 
     def _init_tts_module(self, vllm_config: VllmConfig) -> None:
-        """Initialise ``self.tts`` when ``enable_audio_output=True``.
+        """Initialise ``self.tts`` (``MiniCPMTTS``) when
+        ``enable_audio_output=True``.
 
-        ``ConditionalChatTTS`` lives in the HuggingFace model repo and is
-        loaded via ``trust_remote_code``.  If the class cannot be resolved
-        (e.g. ``--trust-remote-code`` not set) a warning is logged and TTS
-        is left uninitialised — ``decode_audio_tokens()`` will raise at call
-        time with a clear message.
+        ``MiniCPMTTS`` is the TTS sub-model in the HuggingFace
+        ``modeling_minicpmo.py``.  It is loaded via ``trust_remote_code``
+        so that weight loading works correctly.  If the class cannot be
+        resolved a warning is logged and TTS is left uninitialised —
+        ``decode_audio_tokens()`` will raise at call time with a clear
+        message.
         """
         tts_config = getattr(self.config, "tts_config", None)
         if tts_config is None:
@@ -888,14 +890,16 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
 
         model_name = vllm_config.model_config.model
         trust_remote = vllm_config.model_config.trust_remote_code
+        # MiniCPM-o 4.5 uses MiniCPMTTS (not ConditionalChatTTS which was
+        # the class name in earlier model versions).
         tts_cls = try_get_class_from_dynamic_module(
-            "modeling_minicpmo.ConditionalChatTTS",
+            "modeling_minicpmo.MiniCPMTTS",
             model_name,
             trust_remote_code=trust_remote,
         )
         if tts_cls is None:
             logger.warning(
-                "Could not load ConditionalChatTTS from %s "
+                "Could not load MiniCPMTTS from %s "
                 "(trust_remote_code=%s). "
                 "Start vLLM with --trust-remote-code to enable audio output.",
                 model_name,
@@ -903,10 +907,10 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
             )
             return
 
-        self.tts: nn.Module = tts_cls(tts_config)
+        self.tts: nn.Module = tts_cls(config=tts_config, audio_tokenizer=None)
         logger.info(
-            "ConditionalChatTTS initialised for audio output "
-            "(Vocos will be loaded from assets/Vocos.pt in load_weights)."
+            "MiniCPMTTS initialised for audio output "
+            "(Token2wav will be loaded from assets/token2wav/ in load_weights)."
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -915,88 +919,88 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         loader = AutoWeightsLoader(self, skip_prefixes=skip)
         loaded = loader.load_weights(weights)
         if enable_tts and hasattr(self, "tts"):
-            self._load_vocos(self._model_name_or_path)
+            self._init_token2wav(self._model_name_or_path)
         return loaded
 
-    def _load_vocos(self, model_name_or_path: str) -> None:
-        """Load ``assets/Vocos.pt`` and assign to ``self.vocos``.
+    def _init_token2wav(self, model_name_or_path: str) -> None:
+        """Load ``Token2wav`` from ``assets/token2wav/`` and assign to
+        ``self.tts.audio_tokenizer``.
 
-        Resolves the asset path from a local directory or HuggingFace repo.
-        If the file is missing a warning is logged and ``self.vocos`` is left
-        unset — ``decode_audio_tokens()`` will raise at call time.
+        ``Token2wav`` is provided by the ``stepaudio2`` package
+        (``pip install minicpmo-utils[all]``).  The assets are expected at
+        ``assets/token2wav/`` inside the model directory (local or HF hub).
+        If loading fails a warning is logged and
+        ``decode_audio_tokens()`` will raise at call time.
         """
+        try:
+            from stepaudio2 import Token2wav
+        except ImportError:
+            logger.warning(
+                "stepaudio2 is not installed; audio output will not be "
+                "available.  Install with: pip install minicpmo-utils[all]"
+            )
+            return
+
         if os.path.isdir(model_name_or_path):
-            vocos_path = os.path.join(model_name_or_path, "assets", "Vocos.pt")
+            token2wav_dir = os.path.join(
+                model_name_or_path, "assets", "token2wav"
+            )
         else:
             try:
-                from huggingface_hub import hf_hub_download
+                from huggingface_hub import snapshot_download
 
-                vocos_path = hf_hub_download(
+                repo_dir = snapshot_download(
                     repo_id=model_name_or_path,
-                    filename="assets/Vocos.pt",
+                    allow_patterns=["assets/token2wav/**"],
                 )
+                token2wav_dir = os.path.join(repo_dir, "assets", "token2wav")
             except Exception as exc:
                 logger.warning(
-                    "Could not download assets/Vocos.pt from %s: %s. "
+                    "Could not download assets/token2wav/ from %s: %s. "
                     "Audio output will not be available.",
                     model_name_or_path,
                     exc,
                 )
                 return
 
-        if not os.path.isfile(vocos_path):
+        if not os.path.isdir(token2wav_dir):
             logger.warning(
-                "assets/Vocos.pt not found at %s. Audio output will not be available.",
-                vocos_path,
+                "assets/token2wav/ not found at %s. "
+                "Audio output will not be available.",
+                token2wav_dir,
             )
             return
 
         try:
-            vocos_state = torch.load(vocos_path, map_location="cpu", weights_only=True)
+            self.tts.audio_tokenizer = Token2wav(token2wav_dir)  # type: ignore[union-attr]
+            logger.info("Token2wav loaded from %s.", token2wav_dir)
         except Exception as exc:
             logger.warning(
-                "Failed to load assets/Vocos.pt from %s: %s. "
+                "Failed to load Token2wav from %s: %s. "
                 "Audio output will not be available.",
-                vocos_path,
+                token2wav_dir,
                 exc,
             )
-            return
-
-        if hasattr(self.tts, "vocos"):
-            # ConditionalChatTTS carries a Vocos sub-module; load state dict.
-            try:
-                self.tts.vocos.load_state_dict(vocos_state)  # type: ignore[union-attr]
-                self.vocos = self.tts.vocos
-            except Exception as exc:
-                logger.warning(
-                    "load_state_dict for Vocos failed: %s. "
-                    "Falling back to assigning raw state.",
-                    exc,
-                )
-                self.vocos = vocos_state
-        else:
-            # Fallback: store raw state; init_tts() style models populate self.vocos
-            # directly.  HF modeling_minicpmo.init_tts() assigns self.vocos as an
-            # nn.Module — replicate that expectation best-effort.
-            self.vocos = vocos_state
-
-        logger.info("Vocos vocoder loaded from %s.", vocos_path)
 
     def decode_audio_tokens(
         self,
         token_ids: list[int],
     ) -> np.ndarray:
-        """Decode audio token IDs to a waveform via Token2wav.
+        """Decode audio token IDs to a waveform via MiniCPMTTS + Token2wav.
 
-        MiniCPM-o 4.5 uses a two-stage TTS pipeline: the main LLM generates
-        text marked with ``<|tts_bos|>...<|tts_eos|>`` tokens; Token2wav
-        then synthesizes VQ audio codes from that text.  The ``token_ids``
-        passed here are the main LLM output tokens (integer IDs) containing
-        the TTS text span.
+        MiniCPM-o 4.5 uses a two-stage TTS pipeline:
 
-        The model must have been started with
-        ``--hf-overrides '{"enable_audio_output": true}'``.  Vocos is loaded
-        automatically from ``assets/Vocos.pt`` during ``load_weights()``.
+        1. The main LLM generates text that includes TTS spans delimited by
+           ``<|tts_bos|>`` and ``<|tts_eos|>`` special tokens.
+        2. ``MiniCPMTTS`` (``self.tts``) is an autoregressive model that
+           takes the TTS text and generates VQ audio codes.
+        3. ``Token2wav`` (``self.tts.audio_tokenizer``, from the
+           ``stepaudio2`` package) decodes the VQ codes into a waveform.
+
+        The model must be started with
+        ``--hf-overrides '{"enable_audio_output": true}'`` and
+        ``--trust-remote-code``.  The ``stepaudio2`` package must be
+        installed (``pip install minicpmo-utils[all]``).
 
         Args:
             token_ids: Token IDs from the main LLM output that include the
@@ -1006,9 +1010,8 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
             Float32 waveform, shape ``[num_samples]``.
 
         Raises:
-            RuntimeError: If TTS is not initialised (``enable_audio_output``
-                not set, ``trust_remote_code`` missing, or ``init_tts()``
-                not called to load Vocos).
+            RuntimeError: If TTS is not initialised or Token2wav is not
+                loaded (see individual error messages for remediation).
         """
         if not hasattr(self, "tts"):
             raise RuntimeError(
@@ -1016,42 +1019,41 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 "Start vLLM with --hf-overrides '{\"enable_audio_output\": true}' "
                 "and --trust-remote-code."
             )
-        if not hasattr(self, "vocos"):
+        audio_tok = getattr(self.tts, "audio_tokenizer", None)
+        if audio_tok is None:
             raise RuntimeError(
-                "Vocos vocoder not loaded. "
-                "Ensure assets/Vocos.pt is present in the model directory."
+                "Token2wav audio tokenizer not loaded. "
+                "Install stepaudio2 via: pip install minicpmo-utils[all] "
+                "and ensure assets/token2wav/ is present in the model directory."
             )
-        # Dynamic dispatch: _generate_mel_spec and decode_mel_to_audio are
-        # defined on the HuggingFace MiniCPMO class (openbmb/MiniCPM-o-2_6)
-        # and are available when the model is loaded with trust_remote_code.
-        m: Any = self
-        tokenizer = getattr(m, "tokenizer", None)
+        tokenizer = getattr(self, "tokenizer", None)
         if tokenizer is None:
             raise RuntimeError(
                 "self.tokenizer is required to decode token_ids to text "
                 "for TTS synthesis."
             )
         text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
-        # _generate_mel_spec signature: (inputs, outputs, text, ...).
-        # We pass inputs=None and outputs=None because vLLM calls this
-        # post-generation with token IDs only — the raw model inputs/outputs
-        # are not retained.  The HuggingFace implementation accepts text
-        # directly when provided; None for inputs/outputs is expected in this
-        # serving path.  Confirmed via RunPod E2E testing.
-        try:
-            mel_spec = m._generate_mel_spec(inputs=None, outputs=None, text=text)
-            wav_numpy, _sr = m.decode_mel_to_audio(mel_spec)
-        except Exception as exc:
-            raise RuntimeError(
-                "decode_audio_tokens: TTS synthesis failed. "
-                "Ensure the model is loaded with --trust-remote-code and "
-                "assets/Vocos.pt is present. "
-                f"Underlying error: {exc}"
-            ) from exc
-        result: np.ndarray = (
-            wav_numpy.numpy() if hasattr(wav_numpy, "numpy") else wav_numpy
+        # Extract the TTS-destined span between the special markers.
+        if "<|tts_bos|>" in text:
+            text = text.split("<|tts_bos|>")[-1]
+        if "<|tts_eos|>" in text:
+            text = text.split("<|tts_eos|>")[0]
+
+        # MiniCPM-o 4.5 TTS synthesis: MiniCPMTTS generates VQ audio codes
+        # from text, then Token2wav decodes them to a waveform.
+        # The full streaming pipeline (prefill_text → generate → Token2wav)
+        # mirrors HF MiniCPMO._generate_mel_spec() but operates on self.tts
+        # and self.tts.audio_tokenizer directly, without needing the HF
+        # model class or tts_processor.
+        # TODO(#73): Implement MiniCPMTTS.prefill_text() + generate() +
+        #            Token2wav synthesis path and remove this placeholder.
+        raise RuntimeError(
+            "decode_audio_tokens: MiniCPMTTS + Token2wav synthesis is not "
+            "yet wired in the vLLM serving path.  The TTS modules are loaded "
+            "correctly; the remaining work is the prefill_text → generate → "
+            "Token2wav pipeline.  "
+            "Track at https://github.com/nextain/naia-os/issues/73"
         )
-        return result
 
 
 _MINICPMO_SUPPORT_VERSION = {

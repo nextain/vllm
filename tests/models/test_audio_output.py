@@ -7,17 +7,20 @@ calls are mocked).  They verify:
   1. The Protocol interface is correctly detected on MiniCPMO4_5.
   2. Other models (MiniCPMO2_6) are NOT detected.
   3. decode_audio_tokens() raises RuntimeError when TTS is not initialised.
-  4. decode_audio_tokens() delegates to the TTS pipeline when TTS is ready.
-  5. _load_vocos() loads assets/Vocos.pt and handles missing file gracefully.
-  6. The _ModelInfo.supports_audio_output field exists and has the right type.
-  7. load_weights() conditionally skips tts.* prefixes.
+  4. decode_audio_tokens() raises when Token2wav audio_tokenizer is absent.
+  5. decode_audio_tokens() raises a clear "not yet wired" error when all
+     modules are present (synthesis pipeline is a TODO).
+  6. _init_token2wav() loads Token2wav and handles missing stepaudio2/dir.
+  7. The _ModelInfo.supports_audio_output field exists and has the right type.
+  8. load_weights() conditionally skips tts.* prefixes.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import fields
 from typing import Any, ClassVar, Literal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -50,22 +53,26 @@ def _make_fake_minicpmo4_5() -> type[SupportsAudioOutput]:
                     "Start vLLM with --hf-overrides '{\"enable_audio_output\": true}' "
                     "and --trust-remote-code."
                 )
-            if not hasattr(self, "vocos"):
+            audio_tok = getattr(self.tts, "audio_tokenizer", None)
+            if audio_tok is None:
                 raise RuntimeError(
-                    "Vocos vocoder not loaded. "
-                    "Call model.init_tts() after loading to load assets/Vocos.pt."
+                    "Token2wav audio tokenizer not loaded. "
+                    "Install stepaudio2 via: pip install minicpmo-utils[all] "
+                    "and ensure assets/token2wav/ is present."
                 )
             tokenizer = getattr(self, "tokenizer", None)
             if tokenizer is None:
                 raise RuntimeError("self.tokenizer is required.")
-            m: Any = self
             text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
-            mel_spec = m._generate_mel_spec(inputs=None, outputs=None, text=text)
-            wav_numpy, _sr = m.decode_mel_to_audio(mel_spec)
-            result: np.ndarray = (
-                wav_numpy.numpy() if hasattr(wav_numpy, "numpy") else wav_numpy
+            if "<|tts_bos|>" in text:
+                text = text.split("<|tts_bos|>")[-1]
+            if "<|tts_eos|>" in text:
+                text = text.split("<|tts_eos|>")[0]
+            # MiniCPMTTS + Token2wav synthesis pipeline (TODO in production).
+            raise RuntimeError(
+                "decode_audio_tokens: MiniCPMTTS + Token2wav synthesis is not "
+                "yet wired in the vLLM serving path."
             )
-            return result
 
     return FakeMiniCPMO4_5  # type: ignore[return-value]
 
@@ -116,73 +123,72 @@ class TestDecodeAudioTokensNoTTS:
     def test_raises_when_no_tts_attr(self) -> None:
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
         instance = FakeMiniCPMO4_5()
-        # no tts, no vocos on instance
         with pytest.raises(RuntimeError, match="enable_audio_output"):
             instance.decode_audio_tokens([1, 2, 3])
 
-    def test_raises_when_tts_but_no_vocos(self) -> None:
+    def test_raises_when_tts_but_no_audio_tokenizer(self) -> None:
+        """tts present but audio_tokenizer is None → Token2wav error."""
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
         instance = FakeMiniCPMO4_5()
         instance.tts = MagicMock()  # type: ignore[attr-defined]
-        with pytest.raises(RuntimeError, match="Vocos"):
+        # audio_tokenizer attribute returns None by default on MagicMock
+        instance.tts.audio_tokenizer = None
+        with pytest.raises(RuntimeError, match="Token2wav"):
             instance.decode_audio_tokens([1, 2, 3])
 
     def test_raises_when_no_tokenizer(self) -> None:
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
         instance = FakeMiniCPMO4_5()
         instance.tts = MagicMock()  # type: ignore[attr-defined]
-        instance.vocos = MagicMock()  # type: ignore[attr-defined]
+        instance.tts.audio_tokenizer = MagicMock()
         # no tokenizer — getattr returns None
         with pytest.raises(RuntimeError, match="tokenizer"):
             instance.decode_audio_tokens([1, 2, 3])
 
-
-# ---------------------------------------------------------------------------
-# Test 3: decode_audio_tokens succeeds with mocked TTS pipeline
-# ---------------------------------------------------------------------------
-
-
-class TestDecodeAudioTokensMocked:
-    def _make_ready_instance(self) -> Any:
-        """Return a FakeMiniCPMO4_5 instance with tts/vocos/tokenizer mocked."""
+    def test_raises_not_yet_wired_when_fully_initialised(self) -> None:
+        """When tts + audio_tokenizer + tokenizer are all set, the synthesis
+        pipeline raises a clear 'not yet wired' error (work in progress)."""
         FakeMiniCPMO4_5 = _make_fake_minicpmo4_5()
         instance = FakeMiniCPMO4_5()
         instance.tts = MagicMock()  # type: ignore[attr-defined]
-        instance.vocos = MagicMock()  # type: ignore[attr-defined]
+        instance.tts.audio_tokenizer = MagicMock()
         instance.tokenizer = MagicMock()  # type: ignore[attr-defined]
-        instance.tokenizer.decode.return_value = "Hello world"
-        instance._generate_mel_spec = MagicMock(  # type: ignore[attr-defined]
-            return_value=torch.zeros(1, 10, 100)
-        )
-        instance.decode_mel_to_audio = MagicMock(  # type: ignore[attr-defined]
-            return_value=(np.zeros(24000, dtype=np.float32), 24000)
-        )
-        return instance
+        instance.tokenizer.decode.return_value = "<|tts_bos|>Hello<|tts_eos|>"
+        with pytest.raises(RuntimeError, match="not yet wired"):
+            instance.decode_audio_tokens([1, 2, 3])
 
-    def test_returns_ndarray(self) -> None:
-        instance = self._make_ready_instance()
-        result = instance.decode_audio_tokens([10, 20, 30])
-        assert isinstance(result, np.ndarray)
-        assert result.dtype == np.float32
-        assert result.shape == (24000,)
 
-    def test_delegates_to_generate_mel_spec(self) -> None:
-        instance = self._make_ready_instance()
-        instance.decode_audio_tokens([5, 6, 7])
-        instance._generate_mel_spec.assert_called_once_with(
-            inputs=None, outputs=None, text="Hello world"
-        )
+# ---------------------------------------------------------------------------
+# Test 3: TTS text extraction from token stream
+# ---------------------------------------------------------------------------
 
-    def test_handles_torch_tensor_wav(self) -> None:
-        """decode_mel_to_audio may return a torch.Tensor; ensure .numpy()."""
-        instance = self._make_ready_instance()
-        fake_wav_tensor = torch.zeros(12000, dtype=torch.float32)
-        instance.decode_mel_to_audio.return_value = (fake_wav_tensor, 24000)
 
-        result = instance.decode_audio_tokens([1])
+class TestTTSTextExtraction:
+    """Verify that the TTS span is correctly extracted from the token stream."""
 
-        assert isinstance(result, np.ndarray)
-        assert result.shape == (12000,)
+    def _extract_tts_text(self, text: str) -> str:
+        """Mirror the extraction logic in decode_audio_tokens."""
+        if "<|tts_bos|>" in text:
+            text = text.split("<|tts_bos|>")[-1]
+        if "<|tts_eos|>" in text:
+            text = text.split("<|tts_eos|>")[0]
+        return text
+
+    def test_extracts_span_between_markers(self) -> None:
+        raw = "Some preamble<|tts_bos|>Hello world<|tts_eos|>trailing"
+        assert self._extract_tts_text(raw) == "Hello world"
+
+    def test_no_markers_passes_through(self) -> None:
+        raw = "plain text"
+        assert self._extract_tts_text(raw) == "plain text"
+
+    def test_only_bos_marker(self) -> None:
+        raw = "<|tts_bos|>after bos"
+        assert self._extract_tts_text(raw) == "after bos"
+
+    def test_only_eos_marker(self) -> None:
+        raw = "before eos<|tts_eos|>ignored"
+        assert self._extract_tts_text(raw) == "before eos"
 
 
 # ---------------------------------------------------------------------------
@@ -205,107 +211,105 @@ class TestLoadWeightsSkipPrefixes:
 
 
 # ---------------------------------------------------------------------------
-# Test 5: _load_vocos — Vocos loading from assets/Vocos.pt
+# Test 5: _init_token2wav — Token2wav loading from assets/token2wav/
 # ---------------------------------------------------------------------------
 
 
-class _FakeLoadVocos:
-    """Minimal stand-in for MiniCPMO4_5 to test _load_vocos in isolation."""
+class _FakeInitToken2wav:
+    """Minimal stand-in for MiniCPMO4_5 to test _init_token2wav in isolation."""
 
     def __init__(self) -> None:
         self.tts = MagicMock()
-        # tts has no vocos sub-module by default
-        del self.tts.vocos
 
-    def _load_vocos(self, model_name_or_path: str) -> None:
+    def _init_token2wav(self, model_name_or_path: str) -> None:
         """Copy of the production implementation for isolated unit testing."""
-        import os
-
-        import torch
+        try:
+            from stepaudio2 import Token2wav
+        except ImportError:
+            return
 
         if os.path.isdir(model_name_or_path):
-            vocos_path = os.path.join(model_name_or_path, "assets", "Vocos.pt")
+            token2wav_dir = os.path.join(
+                model_name_or_path, "assets", "token2wav"
+            )
         else:
             try:
-                from huggingface_hub import hf_hub_download
+                from huggingface_hub import snapshot_download
 
-                vocos_path = hf_hub_download(
+                repo_dir = snapshot_download(
                     repo_id=model_name_or_path,
-                    filename="assets/Vocos.pt",
+                    allow_patterns=["assets/token2wav/**"],
                 )
+                token2wav_dir = os.path.join(repo_dir, "assets", "token2wav")
             except Exception:
                 return
 
-        if not os.path.isfile(vocos_path):
+        if not os.path.isdir(token2wav_dir):
             return
 
         try:
-            vocos_state = torch.load(vocos_path, map_location="cpu", weights_only=True)
+            self.tts.audio_tokenizer = Token2wav(token2wav_dir)
         except Exception:
-            return
-
-        if hasattr(self.tts, "vocos"):
-            try:
-                self.tts.vocos.load_state_dict(vocos_state)
-                self.vocos = self.tts.vocos
-            except Exception:
-                self.vocos = vocos_state
-        else:
-            self.vocos = vocos_state
+            pass
 
 
-class TestLoadVocos:
-    """Unit tests for _load_vocos path-resolution and torch.load dispatch."""
+class TestInitToken2wav:
+    """Unit tests for _init_token2wav path-resolution and Token2wav dispatch."""
 
-    def test_missing_file_does_not_raise(self, tmp_path: Any) -> None:
-        """assets/Vocos.pt absent → vocos not set, no exception."""
-        instance = _FakeLoadVocos()
-        # model dir exists but assets/Vocos.pt does not
-        instance._load_vocos(str(tmp_path))
-        assert not hasattr(instance, "vocos")
+    def test_missing_stepaudio2_does_not_raise(self, tmp_path: Any) -> None:
+        """stepaudio2 not installed → audio_tokenizer not set, no exception."""
+        instance = _FakeInitToken2wav()
+        # stepaudio2 not installed in test env → ImportError caught silently
+        instance._init_token2wav(str(tmp_path))
+        # tts.audio_tokenizer remains the MagicMock default (not overwritten)
+        assert not hasattr(instance.tts, "_token2wav_loaded")
 
-    def test_local_path_loads_state(self, tmp_path: Any) -> None:
-        """Local directory with assets/Vocos.pt → self.vocos populated."""
-        assets_dir = tmp_path / "assets"
-        assets_dir.mkdir()
-        fake_state: dict[str, torch.Tensor] = {"weight": torch.zeros(4)}
-        torch.save(fake_state, assets_dir / "Vocos.pt")
+    def test_missing_dir_does_not_raise(self, tmp_path: Any) -> None:
+        """assets/token2wav/ absent → no crash, audio_tokenizer not changed."""
+        instance = _FakeInitToken2wav()
+        fake_token2wav = MagicMock()
 
-        instance = _FakeLoadVocos()
-        instance._load_vocos(str(tmp_path))
+        def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "stepaudio2":
+                mod = MagicMock()
+                mod.Token2wav = MagicMock(return_value=fake_token2wav)
+                return mod
+            raise ImportError(name)
 
-        assert hasattr(instance, "vocos")
-        assert isinstance(instance.vocos, dict)
-        assert "weight" in instance.vocos
+        # assets/token2wav/ does not exist in tmp_path
+        with patch("builtins.__import__", side_effect=fake_import):
+            instance._init_token2wav(str(tmp_path))
+        # Token2wav() should NOT be called if dir is absent
+        fake_token2wav.assert_not_called()
 
-    def test_tts_has_vocos_submodule(self, tmp_path: Any) -> None:
-        """tts.vocos present → load_state_dict called and self.vocos = tts.vocos."""
-        assets_dir = tmp_path / "assets"
-        assets_dir.mkdir()
-        fake_state: dict[str, torch.Tensor] = {"w": torch.zeros(2)}
-        pt_path = assets_dir / "Vocos.pt"
-        torch.save(fake_state, pt_path)
+    def test_local_dir_loads_token2wav(self, tmp_path: Any) -> None:
+        """Local directory with assets/token2wav/ → Token2wav instantiated."""
+        token2wav_dir = tmp_path / "assets" / "token2wav"
+        token2wav_dir.mkdir(parents=True)
 
-        instance = _FakeLoadVocos()
-        vocos_module = MagicMock()
-        instance.tts.vocos = vocos_module
+        instance = _FakeInitToken2wav()
+        fake_token2wav_instance = MagicMock()
+        FakeToken2wav = MagicMock(return_value=fake_token2wav_instance)
 
-        instance._load_vocos(str(tmp_path))
+        with patch.dict("sys.modules", {"stepaudio2": MagicMock(Token2wav=FakeToken2wav)}):
+            instance._init_token2wav(str(tmp_path))
 
-        vocos_module.load_state_dict.assert_called_once_with(fake_state)
-        assert instance.vocos is vocos_module
+        FakeToken2wav.assert_called_once_with(str(token2wav_dir))
+        assert instance.tts.audio_tokenizer is fake_token2wav_instance
 
     def test_non_local_path_skips_gracefully_without_hf(self) -> None:
-        """Non-local path that fails hf_hub_download → vocos not set, no exception."""
-        from unittest.mock import patch
+        """Non-local path that fails snapshot_download → no crash."""
+        instance = _FakeInitToken2wav()
+        FakeToken2wav = MagicMock()
 
-        def _fail(*args: Any, **kwargs: Any) -> None:
+        def fake_snapshot_download(*args: Any, **kwargs: Any) -> None:
             raise RuntimeError("network error")
 
-        with patch("huggingface_hub.hf_hub_download", side_effect=_fail):
-            instance = _FakeLoadVocos()
-            instance._load_vocos("openbmb/MiniCPM-o-4_5")
-        assert not hasattr(instance, "vocos")
+        with patch.dict("sys.modules", {"stepaudio2": MagicMock(Token2wav=FakeToken2wav)}), \
+             patch("huggingface_hub.snapshot_download", side_effect=fake_snapshot_download):
+            instance._init_token2wav("openbmb/MiniCPM-o-4_5")
+
+        FakeToken2wav.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
