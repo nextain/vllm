@@ -678,6 +678,7 @@ class _ModelInfo:
     has_noops: bool
     supports_mamba_prefix_caching: bool
     supports_audio_output: bool
+    """Whether the model implements SupportsAudioOutput (text-in → audio-out)."""
     supports_transcription: bool
     supports_transcription_only: bool
 

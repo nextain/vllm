@@ -188,11 +188,12 @@ class Scheduler(SchedulerInterface):
                 vllm_config.model_config,
             )
             self._model_supports_audio_output: bool = _model_info.supports_audio_output
-        except Exception:
+        except (KeyError, AttributeError, ValueError) as exc:
             logger.warning(
-                "Could not determine audio output support for model %s; "
+                "Could not determine audio output support for model %s (%s); "
                 "audio output disabled.",
                 vllm_config.model_config.model,
+                exc,
             )
             self._model_supports_audio_output = False
         self._held_engine_core_outputs: dict[str, tuple[int, EngineCoreOutput]] = {}
@@ -1318,13 +1319,21 @@ class Scheduler(SchedulerInterface):
         # Release held final outputs for requests whose audio synthesis
         # completed in the GPU runner (one step after the request finished).
         if model_runner_output.audio_outputs:
-            for _req_id, _wav in model_runner_output.audio_outputs.items():
-                _held = self._held_engine_core_outputs.pop(_req_id, None)
-                if _held is not None:
-                    _client_idx, _eng_out = _held
-                    if _wav is not None:
-                        _eng_out.audio_output = _wav
-                    outputs[_client_idx].append(_eng_out)
+            transcripts = model_runner_output.audio_transcripts or {}
+            for req_id, wav_bytes in model_runner_output.audio_outputs.items():
+                held = self._held_engine_core_outputs.pop(req_id, None)
+                if held is not None:
+                    client_idx, eng_out = held
+                    if wav_bytes is not None:
+                        eng_out.audio_output = wav_bytes
+                        eng_out.audio_transcript = transcripts.get(req_id)
+                    outputs[client_idx].append(eng_out)
+                else:
+                    logger.warning(
+                        "Received audio output for request %s that is not "
+                        "in held outputs; discarding.",
+                        req_id,
+                    )
 
         spec_decoding_stats: SpecDecodingStats | None = None
         kv_connector_stats: KVConnectorStats | None = (
@@ -1852,6 +1861,10 @@ class Scheduler(SchedulerInterface):
     def _free_blocks(self, request: Request):
         assert request.is_finished()
         self.kv_cache_manager.free(request)
+        # Discard any held audio output for this request.  This handles the
+        # case where a request is aborted externally (e.g., via finish_requests)
+        # while its EngineCoreOutput is still waiting for audio synthesis.
+        self._held_engine_core_outputs.pop(request.request_id, None)
         del self.requests[request.request_id]
 
     @property
@@ -2010,6 +2023,13 @@ class Scheduler(SchedulerInterface):
         return spec_decoding_stats
 
     def shutdown(self) -> None:
+        if self._held_engine_core_outputs:
+            logger.warning(
+                "Scheduler shutting down with %d pending audio outputs; "
+                "discarding.",
+                len(self._held_engine_core_outputs),
+            )
+            self._held_engine_core_outputs.clear()
         if self.kv_event_publisher:
             self.kv_event_publisher.shutdown()
         if self.connector is not None:

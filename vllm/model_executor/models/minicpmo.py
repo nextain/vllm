@@ -1076,7 +1076,7 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
     def decode_audio_tokens(
         self,
         token_ids: list[int],
-    ) -> np.ndarray | None:
+    ) -> "tuple[np.ndarray, str] | None":
         """Decode audio token IDs to a waveform via MiniCPMTTS + Token2wav.
 
         MiniCPM-o 4.5 uses a two-stage TTS pipeline:
@@ -1098,7 +1098,10 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 TTS text span between ``<|tts_bos|>`` and ``<|tts_eos|>``.
 
         Returns:
-            Float32 waveform, shape ``[num_samples]``.
+            ``(waveform, transcript)`` where *waveform* is float32,
+            shape ``[num_samples]``, and *transcript* is the plain text of
+            the TTS span.  Returns ``None`` if ``token_ids`` contain no TTS
+            span (i.e. no ``<|tts_bos|>`` marker).
 
         Raises:
             RuntimeError: If TTS is not initialised or Token2wav is not
@@ -1126,14 +1129,15 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         import soundfile as sf
 
         # Extract the TTS-destined span between the special markers.
-        text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
-        if "<|tts_bos|>" not in text:
+        raw_text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
+        if "<|tts_bos|>" not in raw_text:
             # No TTS span in this output — text-only request.
             # Return None so the caller skips WAV encoding for this request.
             return None
-        text = text.split("<|tts_bos|>")[-1]
+        text = raw_text.split("<|tts_bos|>")[-1]
         if "<|tts_eos|>" in text:
             text = text.split("<|tts_eos|>")[0]
+        tts_transcript: str = text
 
         # Re-encode the extracted text span to obtain clean TTS input IDs.
         tts_ids: list[int] = tokenizer.encode(text, add_special_tokens=False)
@@ -1195,7 +1199,7 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         wav_bytes: bytes = self.tts.audio_tokenizer(audio_codes, None)
 
         waveform, _ = sf.read(io.BytesIO(wav_bytes))
-        return np.array(waveform, dtype=np.float32)
+        return np.array(waveform, dtype=np.float32), tts_transcript
 
 
 _MINICPMO_SUPPORT_VERSION = {

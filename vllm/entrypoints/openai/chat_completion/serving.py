@@ -1379,7 +1379,10 @@ class OpenAIServingChat(OpenAIServing):
                         id=f"audio-{request_id}-{output.index}",
                         data=base64.b64encode(output.audio_output).decode("utf-8"),
                         expires_at=0,
-                        transcript=output.text or "",
+                        # output.text is the full text response, not the TTS
+                        # span.  A proper transcript would require threading the
+                        # extracted TTS text through the output pipeline.
+                        transcript=output.audio_transcript or "",
                     )
                 choices.append(choice_data)
                 continue
@@ -1586,7 +1589,10 @@ class OpenAIServingChat(OpenAIServing):
                     id=f"audio-{request_id}-{output.index}",
                     data=base64.b64encode(output.audio_output).decode("utf-8"),
                     expires_at=0,
-                    transcript=output.text or "",
+                    # output.text is the full text response, not the TTS
+                    # span.  A proper transcript would require threading the
+                    # extracted TTS text through the output pipeline.
+                    transcript=output.audio_transcript or "",
                 )
 
             choices.append(choice_data)

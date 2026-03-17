@@ -35,6 +35,14 @@ class CompletionOutput:
             to stop, None if the completion finished for some other reason
             including encountering the EOS token.
         lora_request: The LoRA request that was used to generate the output.
+        audio_output: WAV-encoded audio produced by
+            :meth:`~vllm.model_executor.models.interfaces.SupportsAudioOutput.decode_audio_tokens`
+            for models that implement ``SupportsAudioOutput``.  ``None``
+            when the request produced no audio.
+        audio_transcript: The text of the TTS span that was converted to
+            audio (the content between ``<|tts_bos|>`` and ``<|tts_eos|>``
+            markers).  ``None`` when ``audio_output`` is ``None`` or the
+            model does not expose a TTS transcript.
     """
 
     index: int
@@ -49,6 +57,10 @@ class CompletionOutput:
     # WAV-encoded audio produced by decode_audio_tokens() for models that
     # implement SupportsAudioOutput (e.g. MiniCPM-o 4.5 in TTS mode).
     audio_output: bytes | None = None
+    # Text of the TTS span that was converted to audio (extracted from the
+    # token stream between <|tts_bos|> … <|tts_eos|> markers).  None when
+    # audio_output is None or when the model does not provide TTS text.
+    audio_transcript: str | None = None
 
     def finished(self) -> bool:
         return self.finish_reason is not None
@@ -62,7 +74,9 @@ class CompletionOutput:
             f"cumulative_logprob={self.cumulative_logprob}, "
             f"logprobs={self.logprobs}, "
             f"finish_reason={self.finish_reason}, "
-            f"stop_reason={self.stop_reason})"
+            f"stop_reason={self.stop_reason}, "
+            f"audio_output={'<bytes>' if self.audio_output is not None else None}, "
+            f"audio_transcript={self.audio_transcript!r})"
         )
 
 

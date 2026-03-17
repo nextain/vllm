@@ -171,6 +171,10 @@ class EngineCoreOutput(
     # SupportsAudioOutput and whose generated sequence contained a TTS span.
     audio_output: bytes | None = None
 
+    # Plain text of the TTS span that was converted to audio.  Parallel to
+    # audio_output; None when audio_output is None.
+    audio_transcript: str | None = None
+
     @property
     def finished(self) -> bool:
         return self.finish_reason is not None

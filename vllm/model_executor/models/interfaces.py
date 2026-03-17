@@ -1517,13 +1517,16 @@ class SupportsAudioOutput(Protocol):
     """
 
     audio_output_sample_rate: ClassVar[int]
-    """Sample rate (Hz) of generated audio.  E.g. 24000 for MiniCPM-o 4.5."""
+    """Sample rate (Hz) of generated audio.  E.g. 24000 for MiniCPM-o 4.5.
+
+    Required.  Every implementing class must define this attribute.
+    """
 
     def decode_audio_tokens(
         self,
         token_ids: list[int],
-    ) -> np.ndarray | None:
-        """Decode audio token IDs to a waveform (float32, shape [samples]).
+    ) -> "tuple[np.ndarray, str] | None":
+        """Decode audio token IDs to a waveform and TTS transcript.
 
         This is an **instance method** (not a classmethod) because audio
         output requires initialised model state (``self.tts``, ``self.tts.audio_tokenizer``)
@@ -1539,8 +1542,10 @@ class SupportsAudioOutput(Protocol):
                 TTS text span (``<|tts_bos|>...<|tts_eos|>``).
 
         Returns:
-            Float32 waveform array with shape ``[num_samples]``, or ``None``
-            if ``token_ids`` contain no TTS span (i.e. no ``<|tts_bos|>``
+            ``(waveform, transcript)`` where *waveform* is a float32 array
+            with shape ``[num_samples]`` and *transcript* is the plain text
+            of the TTS span (the text that was spoken).  Returns ``None`` if
+            ``token_ids`` contain no TTS span (i.e. no ``<|tts_bos|>``
             marker).  The caller must treat ``None`` as "no audio for this
             request" and skip WAV encoding.
 

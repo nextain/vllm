@@ -255,9 +255,14 @@ class ModelRunnerOutput:
 
     # req_id → WAV bytes produced by decode_audio_tokens() for finished
     # requests.  Only populated when the model implements SupportsAudioOutput.
-    # None value means synthesis was attempted but failed; the scheduler
-    # should still release the held EngineCoreOutput without audio.
+    # Per-request None means no TTS span was found or synthesis failed; the
+    # outer None means SupportsAudioOutput is not implemented by this model.
     audio_outputs: dict[str, bytes | None] | None = None
+
+    # req_id → TTS transcript text (the spoken text extracted from the token
+    # stream between <|tts_bos|> … <|tts_eos|>).  Parallel to audio_outputs;
+    # per-request None means no transcript available for that request.
+    audio_transcripts: dict[str, str | None] | None = None
 
 
 # ModelRunnerOutput wrapper for async scheduling.

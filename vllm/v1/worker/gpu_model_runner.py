@@ -4085,32 +4085,38 @@ class GPUModelRunner(
             # Synchronise the device first so that the main forward-pass
             # kernels have completed before we launch TTS kernels.
             audio_outputs: dict[str, bytes | None] | None = None
+            audio_transcripts: dict[str, str | None] | None = None
             if self._pending_audio_token_ids:
                 self._sync_device()
                 import soundfile as _sf
 
                 audio_outputs = {}
+                audio_transcripts = {}
                 sample_rate: int = getattr(
                     self.model, "audio_output_sample_rate", 24000
                 )
                 for _req_id, _token_ids in self._pending_audio_token_ids.items():
                     try:
-                        _waveform = self.model.decode_audio_tokens(_token_ids)
-                        if _waveform is None:
+                        _result = self.model.decode_audio_tokens(_token_ids)
+                        if _result is None:
                             # No TTS span in this request's output — skip
                             # WAV encoding.  None signals the scheduler to
                             # release the held EngineCoreOutput without audio.
                             audio_outputs[_req_id] = None
+                            audio_transcripts[_req_id] = None
                             continue
+                        _waveform, _transcript = _result
                         _buf = io.BytesIO()
                         _sf.write(_buf, _waveform, sample_rate, format="WAV")
                         audio_outputs[_req_id] = _buf.getvalue()
+                        audio_transcripts[_req_id] = _transcript
                     except ImportError:
                         logger.warning(
                             "soundfile is required for audio output encoding. "
                             "Install with: pip install soundfile"
                         )
                         audio_outputs[_req_id] = None
+                        audio_transcripts[_req_id] = None
                     except Exception:
                         logger.exception(
                             "decode_audio_tokens failed for request %s",
@@ -4119,6 +4125,7 @@ class GPUModelRunner(
                         # None signals the scheduler to release the held
                         # EngineCoreOutput without audio.
                         audio_outputs[_req_id] = None
+                        audio_transcripts[_req_id] = None
                 self._pending_audio_token_ids.clear()
 
             output = ModelRunnerOutput(
@@ -4134,6 +4141,7 @@ class GPUModelRunner(
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
                 audio_outputs=audio_outputs,
+                audio_transcripts=audio_transcripts,
             )
 
         if not self.use_async_scheduling:
