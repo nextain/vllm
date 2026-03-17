@@ -1037,17 +1037,25 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
 
         import soundfile as sf
 
-        # torchaudio 2.10+ defaults to TorchCodec which requires FFmpeg.
-        # Force the soundfile (libsndfile) backend so that s3tokenizer's
-        # internal torchaudio.load() call works without FFmpeg installed.
-        # The env-var is checked at call time (not import time), so setting
-        # it here before audio_tokenizer() is invoked is sufficient.
-        os.environ["TORCHAUDIO_USE_TORCHCODEC"] = "0"
+        # torchaudio 2.10+ hardcodes torchaudio.load() to use TorchCodec
+        # which requires FFmpeg shared libraries (libavutil).  When FFmpeg is
+        # not installed the Token2wav → s3tokenizer path fails.  Patch
+        # torchaudio.load to use soundfile (libsndfile) instead; libsndfile
+        # handles WAV natively without any external dependencies.
         try:
-            import torchaudio
-            torchaudio.set_audio_backend("soundfile")
-        except Exception:
-            pass  # API absent in some torchaudio versions; env-var is primary
+            import torchaudio as _torchaudio
+
+            def _soundfile_load(
+                path: Any, *args: Any, **kwargs: Any
+            ) -> tuple[torch.Tensor, int]:
+                _data, _sr = sf.read(str(path), dtype="float32", always_2d=True)
+                # soundfile returns [samples, channels]; torchaudio expects
+                # [channels, samples].
+                return torch.tensor(_data.T, dtype=torch.float32), int(_sr)
+
+            _torchaudio.load = _soundfile_load  # type: ignore[assignment]
+        except ImportError:
+            pass  # torchaudio absent; Token2wav will fail later with a clear error
 
         # Extract the TTS-destined span between the special markers.
         text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
