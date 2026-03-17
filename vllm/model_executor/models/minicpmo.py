@@ -1032,28 +1032,71 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 "self.tokenizer is required to decode token_ids to text "
                 "for TTS synthesis."
             )
-        text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
+        import io
+
+        import soundfile as sf
+
         # Extract the TTS-destined span between the special markers.
+        text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
         if "<|tts_bos|>" in text:
             text = text.split("<|tts_bos|>")[-1]
         if "<|tts_eos|>" in text:
             text = text.split("<|tts_eos|>")[0]
 
-        # MiniCPM-o 4.5 TTS synthesis: MiniCPMTTS generates VQ audio codes
-        # from text, then Token2wav decodes them to a waveform.
-        # The full streaming pipeline (prefill_text → generate → Token2wav)
-        # mirrors HF MiniCPMO._generate_mel_spec() but operates on self.tts
-        # and self.tts.audio_tokenizer directly, without needing the HF
-        # model class or tts_processor.
-        # TODO(#73): Implement MiniCPMTTS.prefill_text() + generate() +
-        #            Token2wav synthesis path and remove this placeholder.
-        raise RuntimeError(
-            "decode_audio_tokens: MiniCPMTTS + Token2wav synthesis is not "
-            "yet wired in the vLLM serving path.  The TTS modules are loaded "
-            "correctly; the remaining work is the prefill_text → generate → "
-            "Token2wav pipeline.  "
-            "Track at https://github.com/nextain/naia-os/issues/73"
+        # Re-encode the extracted text span to obtain clean TTS input IDs.
+        tts_ids: list[int] = tokenizer.encode(text, add_special_tokens=False)
+
+        device = self.tts.emb_text.weight.device
+
+        # Build inputs_embeds for MiniCPMTTS.generate().
+        # MiniCPM-o 4.5 condition_type="hidden_text_merge" normally merges
+        # emb_text(token_ids) with projector_semantic(llm_hidden_states).
+        # In the vLLM serving path LLM hidden states are not available, so
+        # only the token embedding component is used.  This is a known quality
+        # compromise versus the full HF chat() pipeline; the hidden-state path
+        # requires engine-level changes to surface per-token hidden states.
+        tts_tokens = torch.tensor(tts_ids, device=device, dtype=torch.long)
+        tts_embeds = self.tts.emb_text(tts_tokens)  # [L, H]
+        text_eos_embed = self.tts.emb_text(
+            torch.tensor(
+                [self.tts.config.text_eos_token_id],
+                device=device,
+                dtype=torch.long,
+            )
+        )  # [1, H]
+        audio_bos_embed = self.tts.emb_text(
+            torch.tensor(
+                [self.tts.audio_bos_token_id],
+                device=device,
+                dtype=torch.long,
+            )
+        )  # [1, H]
+        # Shape: [1, L+2, H]
+        inputs_embeds = torch.cat(
+            [tts_embeds, text_eos_embed, audio_bos_embed], dim=0
+        ).unsqueeze(0)
+
+        eos_token = torch.tensor(
+            [self.tts.config.num_audio_tokens - 1],
+            dtype=torch.long,
+            device=device,
         )
+        # MiniCPMTTS.generate() is decorated with @torch.inference_mode().
+        gen_out = self.tts.generate(
+            inputs_embeds=inputs_embeds,
+            eos_token=eos_token,
+            show_tqdm=False,
+        )
+
+        # gen_out.new_ids: [1, T, num_vq] — VQ audio code sequences.
+        # Token2wav.__call__(tokens, ref_wav_path) returns WAV bytes.
+        # ref_wav_path=None → default (zero-shot) speaker voice.
+        wav_bytes: bytes = self.tts.audio_tokenizer(
+            gen_out.new_ids.squeeze(0).tolist(),
+            None,
+        )
+        waveform, _ = sf.read(io.BytesIO(wav_bytes))
+        return np.array(waveform, dtype=np.float32)
 
 
 _MINICPMO_SUPPORT_VERSION = {
