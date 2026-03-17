@@ -487,6 +487,14 @@ class GPUModelRunner(
         # self.model: nn.Module  # Set after load_model
         # Initialize in initialize_kv_cache
         self.kv_caches: list[torch.Tensor] = []
+
+        # Audio output support (SupportsAudioOutput protocol).
+        # _supports_audio_output is set in load_model() after the model is
+        # loaded.  _pending_audio_token_ids collects output token IDs for
+        # requests that finished in the previous step so that audio synthesis
+        # can run right before ModelRunnerOutput is built.
+        self._supports_audio_output: bool = False
+        self._pending_audio_token_ids: dict[str, list[int]] = {}
         # Initialize in initialize_kv_cache_tensors
         self.cross_layers_kv_cache: torch.Tensor | None = None
         self.cross_layers_attn_backend: type[AttentionBackend] | None = None
@@ -1026,6 +1034,16 @@ class GPUModelRunner(
         The SamplingMetadata is updated and copied to the GPU if there is a
         new/resumed/paused/finished request in the batch.
         """
+        # Collect output token IDs for finished requests that may need audio
+        # synthesis.  Must happen BEFORE self.requests.pop() removes the state.
+        if self._supports_audio_output and scheduler_output.finished_req_ids:
+            for req_id in scheduler_output.finished_req_ids:
+                req_state = self.requests.get(req_id)
+                if req_state is not None and req_state.output_token_ids:
+                    self._pending_audio_token_ids[req_id] = list(
+                        req_state.output_token_ids
+                    )
+
         # Remove finished requests from the cached states.
         for req_id in scheduler_output.finished_req_ids:
             self.requests.pop(req_id, None)
@@ -4061,6 +4079,34 @@ class GPUModelRunner(
                 else:
                     logger.error("RoutedExpertsCapturer not initialized.")
 
+            # Synthesise audio for requests that finished in the previous
+            # step.  Token IDs were captured in _update_states().
+            audio_outputs: dict[str, bytes | None] | None = None
+            if self._pending_audio_token_ids:
+                import io
+
+                import soundfile as _sf
+
+                audio_outputs = {}
+                sample_rate: int = getattr(
+                    self.model, "audio_output_sample_rate", 24000
+                )
+                for _req_id, _token_ids in self._pending_audio_token_ids.items():
+                    try:
+                        _waveform = self.model.decode_audio_tokens(_token_ids)
+                        _buf = io.BytesIO()
+                        _sf.write(_buf, _waveform, sample_rate, format="WAV")
+                        audio_outputs[_req_id] = _buf.getvalue()
+                    except Exception:
+                        logger.exception(
+                            "decode_audio_tokens failed for request %s",
+                            _req_id,
+                        )
+                        # None signals the scheduler to release the held
+                        # EngineCoreOutput without audio.
+                        audio_outputs[_req_id] = None
+                self._pending_audio_token_ids.clear()
+
             output = ModelRunnerOutput(
                 req_ids=req_ids_output_copy,
                 req_id_to_index=req_id_to_index_output_copy,
@@ -4073,6 +4119,7 @@ class GPUModelRunner(
                 else None,
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
+                audio_outputs=audio_outputs,
             )
 
         if not self.use_async_scheduling:
@@ -4508,6 +4555,11 @@ class GPUModelRunner(
                 self.model = model_loader.load_model(
                     vllm_config=self.vllm_config, model_config=self.model_config
                 )
+                from vllm.model_executor.models.interfaces import (
+                    supports_audio_output as _sao,
+                )
+
+                self._supports_audio_output = _sao(self.model)
                 if self.lora_config:
                     self.model = self.load_lora_model(
                         self.model, self.vllm_config, self.device

@@ -253,6 +253,12 @@ class ModelRunnerOutput:
     # information related to cudagraph execution
     cudagraph_stats: CUDAGraphStat | None = None
 
+    # req_id → WAV bytes produced by decode_audio_tokens() for finished
+    # requests.  Only populated when the model implements SupportsAudioOutput.
+    # None value means synthesis was attempted but failed; the scheduler
+    # should still release the held EngineCoreOutput without audio.
+    audio_outputs: dict[str, bytes | None] | None = None
+
 
 # ModelRunnerOutput wrapper for async scheduling.
 class AsyncModelRunnerOutput(ABC):

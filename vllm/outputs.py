@@ -46,6 +46,9 @@ class CompletionOutput:
     finish_reason: str | None = None
     stop_reason: int | str | None = None
     lora_request: LoRARequest | None = None
+    # WAV-encoded audio produced by decode_audio_tokens() for models that
+    # implement SupportsAudioOutput (e.g. MiniCPM-o 4.5 in TTS mode).
+    audio_output: bytes | None = None
 
     def finished(self) -> bool:
         return self.finish_reason is not None

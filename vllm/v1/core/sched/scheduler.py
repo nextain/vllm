@@ -174,6 +174,24 @@ class Scheduler(SchedulerInterface):
         # This is flushed at the end of each scheduling step.
         self.finished_req_ids: set[str] = set()
 
+        # Audio output support (SupportsAudioOutput protocol).
+        # When the served model implements SupportsAudioOutput, the final
+        # EngineCoreOutput for each finished request is *held* here until
+        # the corresponding audio bytes arrive in the next step's
+        # ModelRunnerOutput.audio_outputs.  Maps req_id →
+        # (client_index, EngineCoreOutput).
+        from vllm.model_executor.models.registry import ModelRegistry
+
+        try:
+            _model_info, _ = ModelRegistry.inspect_model_cls(
+                vllm_config.model_config.architectures or [],
+                vllm_config.model_config,
+            )
+            self._model_supports_audio_output: bool = _model_info.supports_audio_output
+        except Exception:
+            self._model_supports_audio_output = False
+        self._held_engine_core_outputs: dict[str, tuple[int, EngineCoreOutput]] = {}
+
         # Counter for requests waiting for streaming input. Used to calculate
         # number of unfinished requests
         self.num_waiting_for_streaming_input: int = 0
@@ -1291,6 +1309,18 @@ class Scheduler(SchedulerInterface):
             perf_stats = self.perf_metrics.get_step_perf_stats_per_gpu(scheduler_output)
 
         outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
+
+        # Release held final outputs for requests whose audio synthesis
+        # completed in the GPU runner (one step after the request finished).
+        if model_runner_output.audio_outputs:
+            for _req_id, _wav in model_runner_output.audio_outputs.items():
+                _held = self._held_engine_core_outputs.pop(_req_id, None)
+                if _held is not None:
+                    _client_idx, _eng_out = _held
+                    if _wav is not None:
+                        _eng_out.audio_output = _wav
+                    outputs[_client_idx].append(_eng_out)
+
         spec_decoding_stats: SpecDecodingStats | None = None
         kv_connector_stats: KVConnectorStats | None = (
             kv_connector_output.kv_connector_stats if kv_connector_output else None
@@ -1426,25 +1456,33 @@ class Scheduler(SchedulerInterface):
                 or kv_transfer_params
                 or stopped
             ):
-                # Add EngineCoreOutput for this Request.
-                outputs[request.client_index].append(
-                    EngineCoreOutput(
-                        request_id=req_id,
-                        new_token_ids=new_token_ids,
-                        finish_reason=finish_reason,
-                        new_logprobs=new_logprobs,
-                        new_prompt_logprobs_tensors=prompt_logprobs_tensors,
-                        pooling_output=pooler_output,
-                        stop_reason=request.stop_reason,
-                        events=request.take_events(),
-                        kv_transfer_params=kv_transfer_params,
-                        trace_headers=request.trace_headers,
-                        num_cached_tokens=request.num_cached_tokens,
-                        num_external_computed_tokens=request.num_external_computed_tokens,
-                        routed_experts=routed_experts,
-                        num_nans_in_logits=request.num_nans_in_logits,
-                    )
+                # Build the EngineCoreOutput for this request.
+                _engine_core_out = EngineCoreOutput(
+                    request_id=req_id,
+                    new_token_ids=new_token_ids,
+                    finish_reason=finish_reason,
+                    new_logprobs=new_logprobs,
+                    new_prompt_logprobs_tensors=prompt_logprobs_tensors,
+                    pooling_output=pooler_output,
+                    stop_reason=request.stop_reason,
+                    events=request.take_events(),
+                    kv_transfer_params=kv_transfer_params,
+                    trace_headers=request.trace_headers,
+                    num_cached_tokens=request.num_cached_tokens,
+                    num_external_computed_tokens=request.num_external_computed_tokens,
+                    routed_experts=routed_experts,
+                    num_nans_in_logits=request.num_nans_in_logits,
                 )
+                if finished and self._model_supports_audio_output:
+                    # Hold the final output; it will be released with audio
+                    # bytes in the next step when ModelRunnerOutput.
+                    # audio_outputs arrives from the GPU worker.
+                    self._held_engine_core_outputs[req_id] = (
+                        request.client_index,
+                        _engine_core_out,
+                    )
+                else:
+                    outputs[request.client_index].append(_engine_core_out)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors

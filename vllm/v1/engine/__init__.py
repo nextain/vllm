@@ -166,6 +166,11 @@ class EngineCoreOutput(
     # A value greater than 0 indicates that the output is corrupted.
     num_nans_in_logits: int = 0
 
+    # WAV-encoded TTS audio produced by decode_audio_tokens().
+    # Only set for the *final* output of a request whose model implements
+    # SupportsAudioOutput and whose generated sequence contained a TTS span.
+    audio_output: bytes | None = None
+
     @property
     def finished(self) -> bool:
         return self.finish_reason is not None
