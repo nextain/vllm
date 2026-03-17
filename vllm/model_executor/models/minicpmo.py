@@ -1037,11 +1037,10 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
 
         import soundfile as sf
 
-        # torchaudio 2.10+ hardcodes torchaudio.load() to use TorchCodec
-        # which requires FFmpeg shared libraries (libavutil).  When FFmpeg is
-        # not installed the Token2wav → s3tokenizer path fails.  Patch
-        # torchaudio.load to use soundfile (libsndfile) instead; libsndfile
-        # handles WAV natively without any external dependencies.
+        # torchaudio 2.10+ hardcodes both torchaudio.load() and
+        # torchaudio.save() to use TorchCodec, which requires FFmpeg shared
+        # libraries (libavutil).  Patch both with soundfile (libsndfile)
+        # equivalents; libsndfile handles WAV natively without FFmpeg.
         try:
             import torchaudio as _torchaudio
 
@@ -1049,11 +1048,24 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 path: Any, *args: Any, **kwargs: Any
             ) -> tuple[torch.Tensor, int]:
                 _data, _sr = sf.read(str(path), dtype="float32", always_2d=True)
-                # soundfile returns [samples, channels]; torchaudio expects
-                # [channels, samples].
+                # soundfile: [samples, channels]; torchaudio: [channels, samples]
                 return torch.tensor(_data.T, dtype=torch.float32), int(_sr)
 
+            def _soundfile_save(
+                uri: Any,
+                src: torch.Tensor,
+                sample_rate: int,
+                channels_first: bool = True,
+                format: Any = None,  # noqa: A002
+                **kwargs: Any,
+            ) -> None:
+                _arr = src.cpu().numpy()
+                if channels_first and _arr.ndim == 2:
+                    _arr = _arr.T  # [channels, samples] → [samples, channels]
+                sf.write(uri, _arr, sample_rate, format="WAV")
+
             _torchaudio.load = _soundfile_load  # type: ignore[assignment]
+            _torchaudio.save = _soundfile_save  # type: ignore[assignment]
         except ImportError:
             pass  # torchaudio absent; Token2wav will fail later with a clear error
 
@@ -1110,11 +1122,17 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         )
 
         # gen_out.new_ids: [1, T, num_vq] — VQ audio code sequences.
-        # Token2wav.__call__(tokens, ref_wav_path) decodes VQ codes to WAV
-        # bytes using campplus.onnx for speaker embedding.  ref_wav_path must
-        # point to a real WAV file; None is not valid.  Write a 1-second
-        # silent 16 kHz WAV to a temp file to serve as a neutral default
-        # speaker reference when no reference audio is available.
+        # Token2wav.__call__(tokens, ref_wav_path) wraps the token list with
+        # torch.tensor([tokens]) → shape [1, T].  Therefore tokens must be a
+        # flat list [id0, id1, …, idT]; passing new_ids.squeeze(0).tolist()
+        # would give [[id0], [id1], …] (nested, num_vq=1) → shape [1, T, 1]
+        # which causes a 3-D/2-D concat error in flow.inference.
+        # Extract VQ codebook 0 to obtain the required flat list.
+        audio_codes: list[int] = gen_out.new_ids[0, :, 0].tolist()
+
+        # Token2wav requires a reference WAV for speaker embedding via
+        # campplus.onnx; None is not valid.  Write a 1-second silent WAV at
+        # 16 kHz to serve as a neutral default speaker reference.
         ref_wav: np.ndarray = np.zeros(16000, dtype=np.float32)
         tmp_ref_path: str | None = None
         wav_bytes: bytes = b""
@@ -1125,7 +1143,7 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 tmp_ref_path = f.name
             sf.write(tmp_ref_path, ref_wav, 16000)
             wav_bytes = self.tts.audio_tokenizer(
-                gen_out.new_ids.squeeze(0).tolist(),
+                audio_codes,
                 tmp_ref_path,
             )
         finally:
