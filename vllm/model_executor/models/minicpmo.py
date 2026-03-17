@@ -1033,8 +1033,21 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 "for TTS synthesis."
             )
         import io
+        import tempfile
 
         import soundfile as sf
+
+        # torchaudio 2.10+ defaults to TorchCodec which requires FFmpeg.
+        # Force the soundfile (libsndfile) backend so that s3tokenizer's
+        # internal torchaudio.load() call works without FFmpeg installed.
+        # The env-var is checked at call time (not import time), so setting
+        # it here before audio_tokenizer() is invoked is sufficient.
+        os.environ["TORCHAUDIO_USE_TORCHCODEC"] = "0"
+        try:
+            import torchaudio
+            torchaudio.set_audio_backend("soundfile")
+        except Exception:
+            pass  # API absent in some torchaudio versions; env-var is primary
 
         # Extract the TTS-destined span between the special markers.
         text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
@@ -1089,12 +1102,31 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
         )
 
         # gen_out.new_ids: [1, T, num_vq] — VQ audio code sequences.
-        # Token2wav.__call__(tokens, ref_wav_path) returns WAV bytes.
-        # ref_wav_path=None → default (zero-shot) speaker voice.
-        wav_bytes: bytes = self.tts.audio_tokenizer(
-            gen_out.new_ids.squeeze(0).tolist(),
-            None,
-        )
+        # Token2wav.__call__(tokens, ref_wav_path) decodes VQ codes to WAV
+        # bytes using campplus.onnx for speaker embedding.  ref_wav_path must
+        # point to a real WAV file; None is not valid.  Write a 1-second
+        # silent 16 kHz WAV to a temp file to serve as a neutral default
+        # speaker reference when no reference audio is available.
+        ref_wav: np.ndarray = np.zeros(16000, dtype=np.float32)
+        tmp_ref_path: str | None = None
+        wav_bytes: bytes = b""
+        try:
+            with tempfile.NamedTemporaryFile(
+                suffix=".wav", delete=False
+            ) as f:
+                tmp_ref_path = f.name
+            sf.write(tmp_ref_path, ref_wav, 16000)
+            wav_bytes = self.tts.audio_tokenizer(
+                gen_out.new_ids.squeeze(0).tolist(),
+                tmp_ref_path,
+            )
+        finally:
+            if tmp_ref_path is not None:
+                try:
+                    os.unlink(tmp_ref_path)
+                except OSError:
+                    pass
+
         waveform, _ = sf.read(io.BytesIO(wav_bytes))
         return np.array(waveform, dtype=np.float32)
 
