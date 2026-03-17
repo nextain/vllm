@@ -4096,9 +4096,21 @@ class GPUModelRunner(
                 for _req_id, _token_ids in self._pending_audio_token_ids.items():
                     try:
                         _waveform = self.model.decode_audio_tokens(_token_ids)
+                        if _waveform is None:
+                            # No TTS span in this request's output — skip
+                            # WAV encoding.  None signals the scheduler to
+                            # release the held EngineCoreOutput without audio.
+                            audio_outputs[_req_id] = None
+                            continue
                         _buf = io.BytesIO()
                         _sf.write(_buf, _waveform, sample_rate, format="WAV")
                         audio_outputs[_req_id] = _buf.getvalue()
+                    except ImportError:
+                        logger.warning(
+                            "soundfile is required for audio output encoding. "
+                            "Install with: pip install soundfile"
+                        )
+                        audio_outputs[_req_id] = None
                     except Exception:
                         logger.exception(
                             "decode_audio_tokens failed for request %s",

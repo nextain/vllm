@@ -846,6 +846,9 @@ def _patch_torchaudio_for_soundfile() -> None:
     ``soundfile`` (libsndfile) equivalents removes the FFmpeg dependency;
     libsndfile handles WAV natively.
 
+    Only applied for torchaudio >= 2.10; earlier versions use the native
+    backend which does not require FFmpeg and work correctly without patching.
+
     This function is called once from ``_init_token2wav()`` before
     ``Token2wav`` is first used.  Subsequent calls are idempotent.
     """
@@ -858,6 +861,16 @@ def _patch_torchaudio_for_soundfile() -> None:
         import torchaudio as _torchaudio
     except ImportError:
         return  # either absent; Token2wav will surface its own error
+
+    # Parse major.minor version — patch only needed for torchaudio >= 2.10.
+    try:
+        _ver_parts = tuple(
+            int(x) for x in _torchaudio.__version__.split("+")[0].split(".")[:2]
+        )
+    except (ValueError, AttributeError):
+        _ver_parts = (0, 0)
+    if _ver_parts < (2, 10):
+        return  # native backend works; no patch needed
 
     def _sf_load(path: Any, *args: Any, **kwargs: Any) -> tuple[torch.Tensor, int]:
         _data, _sr = _sf.read(str(path), dtype="float32", always_2d=True)
@@ -1063,7 +1076,7 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
     def decode_audio_tokens(
         self,
         token_ids: list[int],
-    ) -> np.ndarray:
+    ) -> np.ndarray | None:
         """Decode audio token IDs to a waveform via MiniCPMTTS + Token2wav.
 
         MiniCPM-o 4.5 uses a two-stage TTS pipeline:
@@ -1114,8 +1127,11 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
 
         # Extract the TTS-destined span between the special markers.
         text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
-        if "<|tts_bos|>" in text:
-            text = text.split("<|tts_bos|>")[-1]
+        if "<|tts_bos|>" not in text:
+            # No TTS span in this output — text-only request.
+            # Return None so the caller skips WAV encoding for this request.
+            return None
+        text = text.split("<|tts_bos|>")[-1]
         if "<|tts_eos|>" in text:
             text = text.split("<|tts_eos|>")[0]
 

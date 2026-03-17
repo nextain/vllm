@@ -160,6 +160,23 @@ class TestDecodeAudioTokensNoTTS:
         with pytest.raises(RuntimeError, match="not yet wired"):
             instance.decode_audio_tokens([1, 2, 3])
 
+    def test_returns_none_when_no_tts_span(self) -> None:
+        """decode_audio_tokens returns None for text-only output (no
+        <|tts_bos|> marker).  The caller must skip WAV encoding."""
+        from vllm.model_executor.models.minicpmo import MiniCPMO4_5
+
+        instance = MiniCPMO4_5.__new__(MiniCPMO4_5)
+        instance.tts = MagicMock()  # type: ignore[attr-defined]
+        instance.tts.audio_tokenizer = MagicMock()
+        instance.tokenizer = MagicMock()  # type: ignore[attr-defined]
+        # Decode returns plain text — no TTS markers present.
+        instance.tokenizer.decode.return_value = "The answer is 42."
+        result = instance.decode_audio_tokens([10, 20, 30])
+        assert result is None, (
+            "decode_audio_tokens must return None when no <|tts_bos|> marker "
+            "is present in the decoded output"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test 3: TTS text extraction from token stream

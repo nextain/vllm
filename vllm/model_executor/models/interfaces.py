@@ -1522,7 +1522,7 @@ class SupportsAudioOutput(Protocol):
     def decode_audio_tokens(
         self,
         token_ids: list[int],
-    ) -> np.ndarray:
+    ) -> np.ndarray | None:
         """Decode audio token IDs to a waveform (float32, shape [samples]).
 
         This is an **instance method** (not a classmethod) because audio
@@ -1539,7 +1539,10 @@ class SupportsAudioOutput(Protocol):
                 TTS text span (``<|tts_bos|>...<|tts_eos|>``).
 
         Returns:
-            Float32 waveform array with shape ``[num_samples]``.
+            Float32 waveform array with shape ``[num_samples]``, or ``None``
+            if ``token_ids`` contain no TTS span (i.e. no ``<|tts_bos|>``
+            marker).  The caller must treat ``None`` as "no audio for this
+            request" and skip WAV encoding.
 
         Raises:
             RuntimeError: If TTS is not initialised on this model instance.

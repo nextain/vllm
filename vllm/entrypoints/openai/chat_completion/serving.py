@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import asyncio
+import base64
 import json
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
@@ -33,6 +34,7 @@ from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionResponseStreamChoice,
     ChatCompletionStreamResponse,
     ChatMessage,
+    OpenAIChatCompletionAudio,
 )
 from vllm.entrypoints.openai.chat_completion.stream_harmony import (
     TokenState,
@@ -1372,6 +1374,13 @@ class OpenAIServingChat(OpenAIServing):
                         as_list(output.token_ids) if request.return_token_ids else None
                     ),
                 )
+                if output.audio_output is not None:
+                    choice_data.message.audio = OpenAIChatCompletionAudio(
+                        id=f"audio-{request_id}-{output.index}",
+                        data=base64.b64encode(output.audio_output).decode("utf-8"),
+                        expires_at=0,
+                        transcript=output.text or "",
+                    )
                 choices.append(choice_data)
                 continue
 
@@ -1572,6 +1581,13 @@ class OpenAIServingChat(OpenAIServing):
                 ),
             )
             choice_data = maybe_filter_parallel_tool_calls(choice_data, request)
+            if output.audio_output is not None:
+                choice_data.message.audio = OpenAIChatCompletionAudio(
+                    id=f"audio-{request_id}-{output.index}",
+                    data=base64.b64encode(output.audio_output).decode("utf-8"),
+                    expires_at=0,
+                    transcript=output.text or "",
+                )
 
             choices.append(choice_data)
 

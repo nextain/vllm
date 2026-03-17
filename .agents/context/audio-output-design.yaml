@@ -1,7 +1,7 @@
 title: SupportsAudioOutput Interface Design
-status: draft
+status: e2e-validated
 author: nextain/vllm fork
-last_updated: 2026-03-16
+last_updated: 2026-03-17
 issue_ref: naia-os#73
 
 scope_decision:
@@ -257,3 +257,46 @@ upstream_discussion_prep:
       pytest tests/models/test_minicpmo_text_regression.py -v: PASSED
       pre-commit run --all-files: PASSED
       AI assistance used: Claude (reviewed and defended end-to-end by Luke N)
+
+# ============================================================
+# SECTION 7: E2E Validation Results (naia-os#73 Phase 2)
+# ============================================================
+e2e_validation:
+  date: 2026-03-17
+  environment:
+    pod: RunPod RTX 3090 (24GB VRAM)
+    model: openbmb/MiniCPM-o-4_5 (BF16, ~20.8GB VRAM)
+    vllm_base: 0.17.1 prebuilt wheel + Python file overlay
+    patch_strategy: |
+      직접 복사: minicpmo.py, outputs.py, engine/__init__.py, output_processor.py
+      수술적 패치: interfaces.py, registry.py, gpu_model_runner.py, serving.py, outputs.py (CompletionOutput)
+      버그 수정: scheduler.py — finished 변수 UnboundLocalError (finished=False 기본값 누락)
+
+  test_results:
+    test1_text_only:
+      prompt: "What is 2+2? Answer with just the number."
+      expected: audio is None
+      result: PASS
+      notes: "서빙 경로 전체에서 크래시 없이 None 전파 확인"
+    test2_tts_request:
+      prompt: "Please say 'Hello' in audio. Generate speech output."
+      expected: audio.data = base64 WAV (>1000 bytes) OR None if no TTS span
+      result: PARTIAL PASS (audio is None — no <|tts_bos|> marker generated)
+      notes: |
+        텍스트 전용 프롬프트로는 TTS 스팬이 트리거되지 않음.
+        decode_audio_tokens()가 None 반환 → 서빙 레이어가 올바르게 처리 (크래시 없음).
+        실제 TTS 트리거는 오디오 입력 제공 시 작동 (반이중 모드).
+
+  conclusion: |
+    서빙 경로(gpu_model_runner → outputs → scheduler → engine/__init__ →
+    output_processor → outputs.py → serving.py)가 audio_output 필드를 크래시 없이
+    전파함을 확인. Phase 2 E2E 완료.
+
+  known_issues:
+    - "vllm 0.17.1 prebuilt + overlay 방식은 임시 검증용. 업스트림 PR은 fork 코드 기반."
+    - "scheduler.py finished=False 버그: fork 코드에도 동일 버그 잠재. upstream PR 전 수정 필요."
+    - "TTS 전체 경로 검증(WAV 바이트 확인)은 오디오 입력 있는 테스트케이스로 별도 진행 필요."
+
+  next_steps:
+    - "Phase 3: Sync + Commit (nextain/vllm에 SPDX + AI disclosure + Signed-off-by 커밋)"
+    - "Phase 4: Luke가 vllm-project/vllm에 Design Issue 오픈 후 PR 3단계 진행"
