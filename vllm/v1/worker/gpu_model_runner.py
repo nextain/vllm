@@ -4081,8 +4081,11 @@ class GPUModelRunner(
 
             # Synthesise audio for requests that finished in the previous
             # step.  Token IDs were captured in _update_states().
+            # Synchronise the device first so that the main forward-pass
+            # kernels have completed before we launch TTS kernels.
             audio_outputs: dict[str, bytes | None] | None = None
             if self._pending_audio_token_ids:
+                self._sync_device()
                 import io
 
                 import soundfile as _sf
