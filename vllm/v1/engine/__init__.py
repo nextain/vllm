@@ -166,9 +166,10 @@ class EngineCoreOutput(
     # A value greater than 0 indicates that the output is corrupted.
     num_nans_in_logits: int = 0
 
-    # WAV-encoded TTS audio produced by decode_audio_tokens().
-    # Only set for the *final* output of a request whose model implements
-    # SupportsAudioOutput and whose generated sequence contained a TTS span.
+    # WAV-encoded TTS audio produced by decode_audio_tokens().  Set on the
+    # *final* output of a request whose model implements SupportsAudioOutput.
+    # None when the generated sequence contained no TTS span or synthesis
+    # failed; the client receives no audio for this request.
     audio_output: bytes | None = None
 
     # Plain text of the TTS span that was converted to audio.  Parallel to

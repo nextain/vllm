@@ -1126,14 +1126,16 @@ class MiniCPMO4_5(MiniCPMOBaseModel, MiniCPMV4_5, SupportsAudioOutput):
                 "self.tokenizer is required to decode token_ids to text "
                 "for TTS synthesis."
             )
-        import soundfile as sf
-
         # Extract the TTS-destined span between the special markers.
         raw_text: str = tokenizer.decode(token_ids, skip_special_tokens=False)
         if "<|tts_bos|>" not in raw_text:
             # No TTS span in this output — text-only request.
             # Return None so the caller skips WAV encoding for this request.
             return None
+
+        # Only import soundfile once we know we actually need to synthesise
+        # audio.  This keeps the early-return path free of optional deps.
+        import soundfile as sf
         text = raw_text.split("<|tts_bos|>")[-1]
         if "<|tts_eos|>" in text:
             text = text.split("<|tts_eos|>")[0]

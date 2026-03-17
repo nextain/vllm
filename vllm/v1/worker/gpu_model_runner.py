@@ -1040,7 +1040,11 @@ class GPUModelRunner(
         if self._supports_audio_output and scheduler_output.finished_req_ids:
             for req_id in scheduler_output.finished_req_ids:
                 req_state = self.requests.get(req_id)
-                if req_state is not None and req_state.output_token_ids:
+                if req_state is not None:
+                    # Always register the request — even with empty token IDs.
+                    # decode_audio_tokens([]) will return None (no <|tts_bos|>),
+                    # which causes the scheduler to release the held
+                    # EngineCoreOutput without audio rather than leaking it.
                     self._pending_audio_token_ids[req_id] = list(
                         req_state.output_token_ids
                     )
